@@ -1,0 +1,36 @@
+# Runtime dependencies. MUST stay at the deployment root: App Service's build (Oryx)
+# looks for requirements.txt here and skips installing anything if it is nested.
+#
+# Pinned so builds are reproducible and Snyk can map each package to known CVEs.
+#
+# BEFORE DEPLOYING:
+#   1. Confirm every version below is available in the org Sonatype/Nexus mirror
+#      (Snyk/Sonatype policy) -- adjust to the nearest approved version if not.
+#      gunicorn and uvicorn are NEW as of the move to App Service and have not been
+#      through that check yet.
+#   2. Re-test the app: several packages crossed a MAJOR version since this app
+#      was first written and may require code changes:
+#         openai            1.x -> 2.x
+#         azure-ai-projects 1.x -> 2.x
+#   3. Dev/test-only packages live in requirements-dev.txt and are deliberately not
+#      shipped.
+#
+# azure-functions is GONE: this is an App Service app now. The Functions entry points
+# are parked in ../legacy-functions/ if that decision is ever revisited.
+
+# -- web server ---------------------------------------------------------------
+# gunicorn supervises the workers (restarts a wedged one, handles SIGTERM);
+# uvicorn provides the ASGI worker class that actually speaks HTTP. Both are needed:
+# see startup.sh.
+gunicorn==23.0.0
+uvicorn[standard]==0.35.0
+
+# -- application --------------------------------------------------------------
+fastapi==0.141.1
+pydantic==2.13.0
+openai==2.50.0
+requests==2.34.2
+azure-ai-projects==2.0.0
+azure-identity==1.25.3
+python-dotenv==1.2.2
+mssql-python==1.12.0

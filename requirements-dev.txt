@@ -1,0 +1,8 @@
+# Dev-only, for the utilities in scripts/. NEVER installed on App Service -- Oryx
+# builds requirements.txt only, which keeps the deployed app free of tooling.
+#
+#   pip install -r requirements.txt -r requirements-dev.txt
+-r requirements.txt
+
+# Used by scripts/run_local.py.
+httpx==0.28.1
