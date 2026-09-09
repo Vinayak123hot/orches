@@ -33,4 +33,6 @@ requests==2.34.2
 azure-ai-projects==2.0.0
 azure-identity==1.25.3
 python-dotenv==1.2.2
+# Parses app/config.yaml -- the structured, non-secret settings each agent validates on startup.
+PyYAML==6.0.2
 mssql-python==1.12.0

@@ -1,0 +1,92 @@
+{
+  "searchResults": [
+    {
+      "sysId": "e3f3d1331be8555449b72f81f54bcb76",
+      "table": "kb_knowledge",
+      "text": "Shared Mailbox Not Working in Outlook After M365 Migration (M365)",
+      "title": "(GLOBAL) Shared Mailbox Not Working in Outlook After M365 Migration (M365)",
+      "columns": [
+        {
+          "fieldName": "short_description",
+          "label": "Short description|Purpose",
+          "value": "(GLOBAL) Shared Mailbox Not Working in Outlook After M365 Migration (M365)",
+          "displayValue": "(GLOBAL) Shared Mailbox Not Working in Outlook After M365 Migration (M365)"
+        },
+        {
+          "fieldName": "number",
+          "label": "Number",
+          "value": "KB0024755",
+          "displayValue": "KB0024755"
+        },
+        {
+          "fieldName": "sys_id",
+          "label": "sys_id",
+          "value": "e3f3d1331be8555449b72f81f54bcb76",
+          "displayValue": "e3f3d1331be8555449b72f81f54bcb76"
+        },
+        {
+          "fieldName": "text",
+          "label": "Article Content",
+          "value": "Shared Mailbox Not Working in Outlook After M365 Migration (M365) You have been migrated to Microsoft 365 and suddenly your shared mailbox is not working anymore? In order to fix that, please remove the shared mailbox and add it again: KB0011855 - (GLOBAL) How to add a Shared mailbox to Microsoft Outlook NOTE: Shared Mailboxes are still on-prem and are not yet migrated to Exchange Online. In these cases, additional configuration is required by the GLMESSAGING team. In case you cannot resolve it on your own, please chat with the Service Desk Team through IT Live Chat. For additional help please contact your local Service Desk support and they will collaborate with the GLMESSAGING team to help you with your shared mailbox.",
+          "displayValue": "Shared Mailbox Not Working in Outlook After M365 Migration (M365) You have been migrated to Microsoft 365 and suddenly your shared mailbox is not working anymore? In order to fix that, please remove the shared mailbox and add it again: KB0011855 - (GLOBAL) How to add a Shared mailbox to Microsoft Outlook NOTE: Shared Mailboxes are still on-prem and are not yet migrated to Exchange Online. In these cases, additional configuration is required by the GLMESSAGING team. In case you cannot resolve it on your own, please chat with the Service Desk Team through IT Live Chat. For additional help please contact your local Service Desk support and they will collaborate with the GLMESSAGING team to help you with your shared mailbox."
+        },
+        {
+          "fieldName": "sys_updated_on",
+          "label": "Updated",
+          "value": "1781388005000",
+          "displayValue": "2026-06-14 00:00:05"
+        },
+        {
+          "fieldName": "kb_category",
+          "label": "Category",
+          "value": "d45c27271be7495049b72f81f54bcbbf",
+          "displayValue": "M365 - Outlook"
+        }
+      ]
+    },
+    {
+      "sysId": "cdb76d831b7a7890f4bfb4f4464bcbb0",
+      "table": "kb_knowledge",
+      "text": "Microsoft Teams Not Working as Expected",
+      "title": "(GLOBAL) Microsoft Teams Not Working as Expected",
+      "columns": [
+        {
+          "fieldName": "short_description",
+          "label": "Short description|Purpose",
+          "value": "(GLOBAL) Microsoft Teams Not Working as Expected",
+          "displayValue": "(GLOBAL) Microsoft Teams Not Working as Expected"
+        },
+        {
+          "fieldName": "number",
+          "label": "Number",
+          "value": "KB0022054",
+          "displayValue": "KB0022054"
+        },
+        {
+          "fieldName": "sys_id",
+          "label": "sys_id",
+          "value": "cdb76d831b7a7890f4bfb4f4464bcbb0",
+          "displayValue": "cdb76d831b7a7890f4bfb4f4464bcbb0"
+        },
+        {
+          "fieldName": "text",
+          "label": "Article Content",
+          "value": "Microsoft Teams Not Working as Expected User Experience: You are experiencing issues with Microsoft Teams. The Microsoft Teams application does not perform as expected. Your status in Microsoft Teams is wrong. Resolution Steps: In order to resolve Microsoft Teams issues, please follow the steps below: 1. Close your Microsoft Outlook if it is open. 2. Sign out of Microsoft Teams (it is not enough to just close the window). 3. Sign back in to Microsoft Teams and reopen Outlook.",
+          "displayValue": "Microsoft Teams Not Working as Expected User Experience: You are experiencing issues with Microsoft Teams. The Microsoft Teams application does not perform as expected. Your status in Microsoft Teams is wrong. Resolution Steps: In order to resolve Microsoft Teams issues, please follow the steps below: 1. Close your Microsoft Outlook if it is open. 2. Sign out of Microsoft Teams (it is not enough to just close the window). 3. Sign back in to Microsoft Teams and reopen Outlook."
+        },
+        {
+          "fieldName": "sys_updated_on",
+          "label": "Updated",
+          "value": "1781388005000",
+          "displayValue": "2026-06-14 00:00:05"
+        },
+        {
+          "fieldName": "kb_category",
+          "label": "Category",
+          "value": "d45c27271be7495049b72f81f54bcbbf",
+          "displayValue": "M365 - Teams"
+        }
+      ]
+    }
+  ]
+}

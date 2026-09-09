@@ -1,0 +1,79 @@
+####################################################################################################
+# Project name      : IT Support Orchestrator API                                                  #
+# Business owner    : <fill: business owner / team>                                                #
+# Notebook Author   : <fill: author name / team>                                                   #
+# Date              : <fill: date>                                                                 #
+#                                                                                                  #
+# Purpose of file:                                                                                 #
+#   1. Application-level, NON-SECRET settings that are too structured to express as env vars.      #
+#   2. One top-level section per agent, so several agents can share this file without colliding.   #
+#   3. Read and schema-validated by each agent's own loader; a bad value fails at construction.    #
+#                                                                                                  #
+# What does NOT belong here:                                                                       #
+#   - Secrets, keys or connection strings. Authentication is Entra ID / Managed Identity by name.  #
+#   - The Foundry project endpoint and anything else the application already reads from its own    #
+#     environment settings. A value duplicated here could only drift from the one actually in use. #
+#                                                                                                  #
+# Loaded by:-                                                                                      #
+#   - app/agents/classification_agent/runtime_config.py -> load_settings() parses the              #
+#     'classification_agent' section below into typed models (fail fast on a bad value).           #
+####################################################################################################
+
+# ==================================================================================================
+# Outlook Support Classification Agent
+# The agent is addressed by NAME and invoked over the Foundry conversation the application creates.
+# Knowledge-base selection runs in-process from the index shipped in the agent's own folder.
+# ==================================================================================================
+classification_agent:
+
+  # --- Which Foundry agent to invoke, and how far one turn may go -------------------------------
+  foundry:
+    # Name of the pre-created Foundry agent. Must match the agent in the Foundry portal exactly.
+    # Overridable at runtime with the CLASSIFICATION_AGENT_NAME application setting.
+    agent_name: "clasification-agent"
+    # A concrete version pins the deployment (e.g. "9"). Leave blank (or "default") to let Foundry
+    # resolve the agent's own default version. Overridable with CLASSIFICATION_AGENT_VERSION.
+    agent_version: ""
+    # Model name used ONLY to price and log response token usage. Keep it in step with the model
+    # the Foundry agent actually runs, or cost is logged as 0.0 with a warning.
+    agent_model_name: "gpt-4.1-mini"
+    # Hard timeout for ONE call to the agent, in seconds. The whole turn is additionally bounded by
+    # the per-call timeout the application injects (AGENT_HTTP_TIMEOUT), so keep this below it.
+    request_timeout_seconds: 60
+    # Maximum knowledge-base fetches within one turn before the agent is handed off to the team.
+    max_search_rounds: 6
+
+  # --- Knowledge-base source ---------------------------------------------------------------------
+  # A relative path is resolved against the agent's own folder, so the index ships with its code.
+  knowledge_base:
+    index_path: "kb_index.json"
+
+  # --- Retry / backoff for remote calls (per-operation overrides allowed) ------------------------
+  # Worst case for one call is attempts x request_timeout_seconds plus the backoff waits, and the
+  # turn's wall-clock budget stops the turn regardless. Raise attempts only with that in mind.
+  retry:
+    default_max_attempts: 3
+    base_delay_seconds: 0.5
+    max_delay_seconds: 8
+    per_tool_max_attempts:
+      foundry_agent: 3
+
+  # --- Cost tracking: PER-TOKEN prices keyed by model name ---------------------------------------
+  # Derive per-token prices from the published per-1M pricing by dividing by 1_000_000.
+  cost:
+    prices:
+      gpt-4.1-mini:
+        input_price: 0.0000004
+        output_price: 0.0000016
+
+  # --- Structured logging ------------------------------------------------------------------------
+  logging:
+    log_level: "INFO"
+
+  # --- Structured log forwarding to Event Hub (off by default) -----------------------------------
+  # Authentication is Managed Identity by name; no connection string is stored. Enabling this
+  # requires the azure-eventhub package, which is imported only when enabled is true.
+  event_hub:
+    enabled: false
+    fully_qualified_namespace: "<fill: your-namespace.servicebus.windows.net>"
+    event_hub_name: "<fill: event hub name>"

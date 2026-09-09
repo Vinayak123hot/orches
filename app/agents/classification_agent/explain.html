@@ -1,0 +1,631 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How the Classification Agent Works</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=JetBrains+Mono:wght@400;500&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&display=swap">
+<style>
+/* ============================================================================
+   Tokens. The light palette is defined once on bare :root; the dark blocks
+   redefine only these values, so every component below stays theme-agnostic.
+   ========================================================================= */
+:root{
+  --ground:#e9edf1;
+  --paper:#ffffff;
+  --panel:#f3f6f9;
+  --ink:#14212f;
+  --ink-soft:#4a5c6f;
+  --ink-faint:#7c8ea1;
+  --rule:#c3d0db;
+  --rule-soft:#dbe4ec;
+  --accent:#0a5c9e;
+  --accent-soft:#e2edf7;
+  --resolved:#1a7355;
+  --resolved-soft:#e0f0ea;
+  --handoff:#a86a1f;
+  --handoff-soft:#f8ecdb;
+  --broke:#a83a2c;
+  --broke-soft:#fae5e2;
+  --shadow:0 1px 2px rgba(20,33,47,.06),0 8px 24px -16px rgba(20,33,47,.28);
+
+  --s1:.25rem; --s2:.5rem; --s3:.75rem; --s4:1rem;
+  --s5:1.5rem; --s6:2rem; --s7:3rem; --s8:4.5rem;
+
+  --sans:"Source Sans 3",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --display:"Archivo",ui-sans-serif,system-ui,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,"SFMono-Regular","Cascadia Mono","Consolas",monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#0d141c;
+    --paper:#151f2a;
+    --panel:#1a2734;
+    --ink:#e2eaf2;
+    --ink-soft:#9fb2c4;
+    --ink-faint:#768899;
+    --rule:#2c3d4e;
+    --rule-soft:#233240;
+    --accent:#63aae8;
+    --accent-soft:#16293b;
+    --resolved:#52c096;
+    --resolved-soft:#122c25;
+    --handoff:#e2a95f;
+    --handoff-soft:#2e2415;
+    --broke:#e3776a;
+    --broke-soft:#301b1a;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -16px rgba(0,0,0,.7);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0d141c;
+  --paper:#151f2a;
+  --panel:#1a2734;
+  --ink:#e2eaf2;
+  --ink-soft:#9fb2c4;
+  --ink-faint:#768899;
+  --rule:#2c3d4e;
+  --rule-soft:#233240;
+  --accent:#63aae8;
+  --accent-soft:#16293b;
+  --resolved:#52c096;
+  --resolved-soft:#122c25;
+  --handoff:#e2a95f;
+  --handoff-soft:#2e2415;
+  --broke:#e3776a;
+  --broke-soft:#301b1a;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -16px rgba(0,0,0,.7);
+}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;
+  background:var(--ground);
+  color:var(--ink);
+  font-family:var(--sans);
+  font-size:17px;
+  line-height:1.65;
+}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:2px}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* ---------- shell ------------------------------------------------------- */
+.sheet{
+  max-width:920px;
+  margin:0 auto;
+  padding:0 var(--s5) var(--s8);
+}
+.col{max-width:64ch}
+h1,h2,h3{font-family:var(--display);text-wrap:balance;margin:0}
+h1{font-size:clamp(2rem,5vw,2.85rem);font-weight:700;line-height:1.1;letter-spacing:-.02em}
+h2{font-size:1.5rem;font-weight:600;line-height:1.25;letter-spacing:-.01em}
+h3{font-size:1.0625rem;font-weight:600;line-height:1.35}
+p{margin:0}
+a{color:var(--accent)}
+
+/* ---------- masthead ---------------------------------------------------- */
+.masthead{padding:var(--s8) 0 var(--s6);border-bottom:1px solid var(--rule)}
+.eyebrow{
+  font-family:var(--mono);font-size:.7rem;font-weight:500;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--accent);
+  display:flex;align-items:center;gap:var(--s3);margin-bottom:var(--s4);
+}
+.eyebrow::after{content:"";flex:1;height:1px;background:var(--rule)}
+.standfirst{
+  font-size:1.1875rem;color:var(--ink-soft);margin-top:var(--s4);max-width:58ch;
+}
+.locator{
+  margin-top:var(--s5);font-family:var(--mono);font-size:.75rem;
+  color:var(--ink-faint);word-break:break-all;
+}
+
+/* ---------- sections ---------------------------------------------------- */
+section{padding-top:var(--s7);display:flex;flex-direction:column;gap:var(--s4)}
+.shead{display:flex;align-items:baseline;gap:var(--s3);flex-wrap:wrap}
+.snum{
+  font-family:var(--mono);font-size:.75rem;font-weight:500;color:var(--accent);
+  border:1px solid var(--rule);border-radius:3px;padding:1px 6px;
+  background:var(--accent-soft);flex:none;
+}
+.lede{font-size:1.0625rem;color:var(--ink-soft)}
+
+/* ---------- filename chip ----------------------------------------------- */
+.f{
+  font-family:var(--mono);font-size:.84em;font-weight:500;
+  background:var(--panel);border:1px solid var(--rule-soft);border-radius:3px;
+  padding:1px 5px;color:var(--ink);white-space:nowrap;
+}
+.f-in{background:none;border:none;padding:0;color:var(--accent)}
+
+/* ---------- schematic map ----------------------------------------------- */
+.map{
+  background:var(--paper);border:1px solid var(--rule);border-radius:6px;
+  padding:var(--s6) var(--s5);box-shadow:var(--shadow);
+  display:flex;flex-direction:column;align-items:stretch;
+}
+.map-cap{
+  font-family:var(--mono);font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--ink-faint);text-align:center;margin-bottom:var(--s5);
+}
+.node{
+  position:relative;background:var(--panel);border:1px solid var(--rule);
+  border-radius:4px;padding:var(--s3) var(--s4);text-align:center;
+}
+.node .nname{font-family:var(--mono);font-size:.85rem;font-weight:500;display:block}
+.node .nrole{font-size:.8125rem;color:var(--ink-soft);display:block;margin-top:2px}
+.node.outside{background:transparent;border-style:dashed;color:var(--ink-soft)}
+.node.core{background:var(--accent-soft);border-color:var(--accent)}
+.node.core .nname{color:var(--accent)}
+.node.ext{background:transparent;border-style:dashed}
+
+.link{
+  height:34px;position:relative;display:flex;align-items:center;justify-content:center;
+}
+.link::before{
+  content:"";position:absolute;top:0;bottom:0;left:50%;width:1px;
+  background:var(--rule);transform:translateX(-.5px);
+}
+.link .llabel{
+  position:relative;background:var(--paper);padding:0 var(--s2);
+  font-family:var(--mono);font-size:.7rem;color:var(--ink-faint);
+}
+.branch{
+  display:grid;grid-template-columns:1fr 1fr;gap:var(--s4);
+  position:relative;padding-top:36px;
+}
+.branch::before{content:"";position:absolute;top:18px;left:25%;right:25%;height:1px;background:var(--rule)}
+.branch::after{content:"";position:absolute;top:0;left:50%;width:1px;height:18px;background:var(--rule);transform:translateX(-.5px)}
+.branch > .node::before{
+  content:"";position:absolute;top:-18px;left:50%;width:1px;height:18px;
+  background:var(--rule);transform:translateX(-.5px);
+}
+.stack{display:flex;flex-direction:column;gap:var(--s3)}
+@media (max-width:620px){
+  .branch{grid-template-columns:1fr;padding-top:var(--s4)}
+  .branch::before,.branch::after{display:none}
+  .branch > .node::before{display:none}
+}
+
+/* ---------- lifetimes --------------------------------------------------- */
+.pair{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:var(--s4)}
+.card{
+  background:var(--paper);border:1px solid var(--rule);border-radius:6px;
+  padding:var(--s5);display:flex;flex-direction:column;gap:var(--s3);
+}
+.card .tag{
+  font-family:var(--mono);font-size:.68rem;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--ink-faint);
+}
+.card ul{margin:0;padding-left:1.1em;display:flex;flex-direction:column;gap:var(--s2);font-size:.9375rem}
+
+/* ---------- numbered journey -------------------------------------------- */
+.steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.steps li{
+  display:grid;grid-template-columns:2.25rem 1fr;column-gap:var(--s4);
+  padding-bottom:var(--s5);position:relative;
+}
+.steps li::before{
+  content:"";position:absolute;left:1.125rem;top:2.1rem;bottom:0;width:1px;background:var(--rule);
+}
+.steps li:last-child{padding-bottom:0}
+.steps li:last-child::before{display:none}
+.steps .mark{
+  grid-column:1;width:2.25rem;height:2.25rem;border-radius:50%;
+  border:1px solid var(--rule);background:var(--paper);color:var(--accent);
+  font-family:var(--mono);font-size:.8125rem;font-weight:500;
+  display:flex;align-items:center;justify-content:center;position:relative;z-index:1;
+}
+.steps .body{grid-column:2;display:flex;flex-direction:column;gap:var(--s2);padding-top:.2rem}
+.steps .where{
+  font-family:var(--mono);font-size:.72rem;letter-spacing:.06em;color:var(--ink-faint);
+  text-transform:uppercase;
+}
+.steps p{font-size:.9688rem;color:var(--ink-soft)}
+.steps strong{color:var(--ink);font-weight:600}
+
+/* ---------- outcomes ---------------------------------------------------- */
+.outcomes{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:var(--s4)}
+.outcome{
+  border:1px solid var(--rule);border-top:3px solid var(--oc);border-radius:6px;
+  background:var(--paper);padding:var(--s5);display:flex;flex-direction:column;gap:var(--s3);
+}
+.outcome .oname{font-family:var(--mono);font-size:.85rem;font-weight:500;color:var(--oc)}
+.outcome h3{color:var(--ink)}
+.outcome p{font-size:.9375rem;color:var(--ink-soft)}
+.outcome .fields{
+  font-family:var(--mono);font-size:.75rem;background:var(--ocs);border-radius:4px;
+  padding:var(--s3);color:var(--ink);line-height:1.7;
+}
+.o-resolved{--oc:var(--resolved);--ocs:var(--resolved-soft)}
+.o-handoff{--oc:var(--handoff);--ocs:var(--handoff-soft)}
+.o-broke{--oc:var(--broke);--ocs:var(--broke-soft)}
+
+/* ---------- reference table --------------------------------------------- */
+.scroller{overflow-x:auto;border:1px solid var(--rule);border-radius:6px;background:var(--paper)}
+table{border-collapse:collapse;width:100%;min-width:560px;font-size:.9375rem}
+th,td{text-align:left;padding:var(--s3) var(--s4);border-bottom:1px solid var(--rule-soft);vertical-align:top}
+thead th{
+  font-family:var(--mono);font-size:.68rem;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--ink-faint);font-weight:500;background:var(--panel);
+  border-bottom:1px solid var(--rule);position:sticky;top:0;
+}
+tbody tr:last-child td{border-bottom:none}
+td:first-child{font-family:var(--mono);font-size:.82rem;white-space:nowrap;color:var(--ink)}
+td.role{color:var(--ink-soft)}
+
+/* ---------- settings sources -------------------------------------------- */
+.sources{display:flex;flex-direction:column;gap:var(--s3)}
+.source{
+  display:grid;grid-template-columns:auto 1fr;gap:var(--s4);align-items:start;
+  border:1px solid var(--rule);border-radius:6px;background:var(--paper);padding:var(--s4) var(--s5);
+}
+.source .knum{
+  font-family:var(--mono);font-size:.7rem;color:var(--accent);border:1px solid var(--rule);
+  border-radius:3px;padding:2px 6px;background:var(--accent-soft);
+}
+.source .stext{display:flex;flex-direction:column;gap:var(--s2)}
+.source p{font-size:.9375rem;color:var(--ink-soft)}
+
+/* ---------- rails ------------------------------------------------------- */
+.rails{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:var(--s4)}
+.rail{border-left:2px solid var(--accent);padding:var(--s1) 0 var(--s1) var(--s4);display:flex;flex-direction:column;gap:var(--s2)}
+.rail p{font-size:.9375rem;color:var(--ink-soft)}
+
+/* ---------- callout ----------------------------------------------------- */
+.note{
+  background:var(--panel);border:1px solid var(--rule);border-left:3px solid var(--handoff);
+  border-radius:4px;padding:var(--s4) var(--s5);display:flex;flex-direction:column;gap:var(--s2);
+}
+.note .ntag{
+  font-family:var(--mono);font-size:.68rem;letter-spacing:.12em;text-transform:uppercase;color:var(--handoff);
+}
+.note p{font-size:.9375rem;color:var(--ink-soft)}
+
+footer{
+  margin-top:var(--s8);padding-top:var(--s5);border-top:1px solid var(--rule);
+  font-family:var(--mono);font-size:.72rem;color:var(--ink-faint);
+}
+</style>
+</head>
+<body>
+<main class="sheet">
+
+  <header class="masthead">
+    <div class="eyebrow">Outlook Support &middot; Agent Walkthrough</div>
+    <h1>How the Classification Agent Works</h1>
+    <p class="standfirst">
+      A person types a problem into a chat. This agent asks whatever it needs to ask, then
+      either names the one help article that matches — or decides no article fits and passes
+      the conversation to a human. Here is every file that takes part, in the order it acts.
+    </p>
+    <div class="locator">app/agents/classification_agent/</div>
+  </header>
+
+  <!-- ================= 1. THE FRONT DOOR ================= -->
+  <section>
+    <div class="shead"><span class="snum">01</span><h2>There is only one way in</h2></div>
+    <div class="col stack">
+      <p class="lede">
+        Everything outside this folder talks to the agent through a single function in
+        <span class="f">main.py</span>:
+      </p>
+      <div class="node core" style="text-align:left">
+        <span class="nname">classify(conversation_id, message)</span>
+        <span class="nrole">main.py &middot; the front door</span>
+      </div>
+      <p class="lede">
+        Two values go in. <strong>conversation_id</strong> is the ticket number for this chat —
+        the same value is passed on every message so the agent remembers what has already been
+        said. <strong>message</strong> is what the person just typed.
+      </p>
+      <p class="lede">
+        One plain result comes back, and the caller reads two things from it: has the
+        conversation finished, and if so, which article was found. Nothing else in this folder
+        is called from outside.
+      </p>
+    </div>
+  </section>
+
+  <!-- ================= 2. THE MAP ================= -->
+  <section>
+    <div class="shead"><span class="snum">02</span><h2>The map</h2></div>
+    <p class="lede col">
+      Read it top to bottom. Solid boxes are files in this folder; dashed boxes are things
+      that live elsewhere.
+    </p>
+
+    <div class="map">
+      <div class="map-cap">One message, from the chat down to the AI and back</div>
+
+      <div class="node outside">
+        <span class="nname">the chat flow</span>
+        <span class="nrole">elsewhere in the app &mdash; asks the question</span>
+      </div>
+
+      <div class="link"><span class="llabel">classify()</span></div>
+
+      <div class="node core">
+        <span class="nname">main.py</span>
+        <span class="nrole">the front door &mdash; checks the answer, shapes the reply</span>
+      </div>
+
+      <div class="link"><span class="llabel">one turn</span></div>
+
+      <div class="node core">
+        <span class="nname">turn_orchestrator.py</span>
+        <span class="nrole">the loop &mdash; decides what happens next, over and over</span>
+      </div>
+
+      <div class="branch">
+        <div class="stack">
+          <div class="node">
+            <span class="nname">foundry_agent_client.py</span>
+            <span class="nrole">talks to the AI</span>
+          </div>
+          <div class="link"><span class="llabel">asks</span></div>
+          <div class="node ext">
+            <span class="nname">Azure AI Foundry</span>
+            <span class="nrole">the AI agent itself</span>
+          </div>
+        </div>
+        <div class="stack">
+          <div class="node">
+            <span class="nname">servicenow_kb_source.py</span>
+            <span class="nrole">fetches the help articles</span>
+          </div>
+          <div class="link"><span class="llabel">reads</span></div>
+          <div class="node ext">
+            <span class="nname">kb_index.json</span>
+            <span class="nrole">the articles, as a file</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 3. TWO LIFETIMES ================= -->
+  <section>
+    <div class="shead"><span class="snum">03</span><h2>Two different clocks</h2></div>
+    <p class="lede col">
+      Some of this happens once, when the application starts. The rest happens on every
+      single message. Mixing the two up is the usual source of confusion, so here they are
+      apart.
+    </p>
+    <div class="pair">
+      <div class="card">
+        <span class="tag">Once per running app</span>
+        <h3>Setting up</h3>
+        <ul>
+          <li><span class="f">runtime_config.py</span> reads <span class="f">app/config.yaml</span> and checks every setting is sensible.</li>
+          <li><span class="f">servicenow_kb_source.py</span> loads <span class="f">kb_index.json</span> into memory and notes every real article number.</li>
+          <li><span class="f">foundry_agent_client.py</span> is handed the app's existing connection to the AI service.</li>
+          <li><span class="f">telemetry_logging.py</span> and <span class="f">model_cost_meter.py</span> are prepared for logging and cost.</li>
+        </ul>
+        <p style="font-size:.875rem;color:var(--ink-faint)">
+          Done once and kept, so the second message never pays for it again.
+        </p>
+      </div>
+      <div class="card">
+        <span class="tag">Every message</span>
+        <h3>Answering</h3>
+        <ul>
+          <li><span class="f">main.py</span> receives the message and starts a stopwatch on it.</li>
+          <li><span class="f">turn_orchestrator.py</span> runs its loop until it has an answer.</li>
+          <li><span class="f">foundry_agent_client.py</span> makes the actual calls to the AI.</li>
+          <li><span class="f">main.py</span> shapes the outcome and hands it back.</li>
+        </ul>
+        <p style="font-size:.875rem;color:var(--ink-faint)">
+          Fast, because everything expensive was already built above.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 4. THE JOURNEY ================= -->
+  <section>
+    <div class="shead"><span class="snum">04</span><h2>One message, step by step</h2></div>
+    <p class="lede col">
+      This is a real sequence — each step only happens after the one before it.
+    </p>
+
+    <ol class="steps">
+      <li>
+        <span class="mark">1</span>
+        <div class="body">
+          <span class="where">main.py</span>
+          <p>The chat flow calls <strong>classify()</strong> with the conversation id and the person's message. <span class="f-in">main.py</span> borrows the connection to the AI service that the application already opened, and works out how long this whole reply is allowed to take.</p>
+        </div>
+      </li>
+      <li>
+        <span class="mark">2</span>
+        <div class="body">
+          <span class="where">turn_orchestrator.py</span>
+          <p>The message is checked against the expected shape by <span class="f-in">service_contracts.py</span> — is there a conversation id, is there actually a message. If either is missing, it stops here rather than guessing.</p>
+        </div>
+      </li>
+      <li>
+        <span class="mark">3</span>
+        <div class="body">
+          <span class="where">foundry_agent_client.py</span>
+          <p>The message is sent to the AI agent, tagged with the conversation id so the AI can see everything said earlier in this chat. The AI replies with a small, strict answer that says <strong>what it wants to do next</strong> — not prose.</p>
+        </div>
+      </li>
+      <li>
+        <span class="mark">4</span>
+        <div class="body">
+          <span class="where">turn_orchestrator.py</span>
+          <p>The reply is read. The AI can say one of four things: <strong>ask the person something</strong>, <strong>show me the help articles</strong>, <strong>I found the article</strong>, or <strong>nothing here fits</strong>.</p>
+        </div>
+      </li>
+      <li>
+        <span class="mark">5</span>
+        <div class="body">
+          <span class="where">servicenow_kb_source.py</span>
+          <p>If the AI asked for the articles, they are fetched from <span class="f-in">kb_index.json</span> and sent straight back to it. The AI does the choosing — nothing in this folder decides which article is right. Then the loop returns to step&nbsp;3.</p>
+        </div>
+      </li>
+      <li>
+        <span class="mark">6</span>
+        <div class="body">
+          <span class="where">servicenow_kb_source.py</span>
+          <p>If the AI claims to have found an article, its number is checked against the real list first. An article number that does not exist is <strong>refused</strong>, and the AI is told to try again with a real one.</p>
+        </div>
+      </li>
+      <li>
+        <span class="mark">7</span>
+        <div class="body">
+          <span class="where">main.py</span>
+          <p>The outcome is turned into the plain result the chat flow expects, and the whole call is timed and recorded so it shows up in the app's own reporting.</p>
+        </div>
+      </li>
+    </ol>
+
+    <div class="note col">
+      <span class="ntag">Why it loops</span>
+      <p>
+        Steps 3 to 6 repeat. That is normal: the AI usually asks to see the articles before it
+        commits to one, so a single message from a person can involve several exchanges with
+        the AI before there is anything to show them.
+      </p>
+    </div>
+  </section>
+
+  <!-- ================= 5. OUTCOMES ================= -->
+  <section>
+    <div class="shead"><span class="snum">05</span><h2>Three ways it can end</h2></div>
+    <p class="lede col">
+      Every call to <span class="f">classify()</span> finishes as exactly one of these. The
+      <strong>status</strong> value says which, and it is the value the caller should act on.
+    </p>
+    <div class="outcomes">
+      <div class="outcome o-handoff">
+        <span class="oname">follow_up</span>
+        <h3>Still asking</h3>
+        <p>The AI needs more detail. The question to put to the person is in the message field, and the chat stays open.</p>
+        <div class="fields">chat_close: false<br>kb_id: none</div>
+      </div>
+      <div class="outcome o-resolved">
+        <span class="oname">resolved</span>
+        <h3>Article found</h3>
+        <p>A real, verified article number, plus a short summary of the person's problem for whatever runs next.</p>
+        <div class="fields">chat_close: true<br>kb_id: KB0024755</div>
+      </div>
+      <div class="outcome o-broke">
+        <span class="oname">no_match</span>
+        <h3>Handed to a person</h3>
+        <p>No article fits, or the agent ran out of attempts or time. The conversation ends here and a human picks it up.</p>
+        <div class="fields">chat_close: true<br>kb_id: none</div>
+      </div>
+    </div>
+    <div class="note col">
+      <span class="ntag">The fourth case</span>
+      <p>
+        If something genuinely breaks — the AI service is unreachable, for example — nothing
+        is returned at all. <span class="f">main.py</span> reports the failure upward instead,
+        so the application shows its own "something went wrong" message rather than leaving
+        the person in a loop that can never finish.
+      </p>
+    </div>
+  </section>
+
+  <!-- ================= 6. FILE REFERENCE ================= -->
+  <section>
+    <div class="shead"><span class="snum">06</span><h2>Every file, and what it is for</h2></div>
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr><th scope="col">File</th><th scope="col">What it does</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>main.py</td><td class="role"><strong>The entry point.</strong> The only thing the rest of the app calls. Shapes the result and reports failures.</td></tr>
+          <tr><td>turn_orchestrator.py</td><td class="role"><strong>The loop.</strong> Runs one reply from start to finish: ask the AI, fetch articles, check the answer, decide when to stop.</td></tr>
+          <tr><td>foundry_agent_client.py</td><td class="role"><strong>The line to the AI.</strong> Sends one question, waits within a time limit, retries a stumble, records what it cost.</td></tr>
+          <tr><td>servicenow_kb_source.py</td><td class="role"><strong>The articles.</strong> Loads them once, hands them over on request, and confirms whether an article number is real.</td></tr>
+          <tr><td>service_contracts.py</td><td class="role"><strong>The shapes.</strong> Describes exactly what a valid message in and a valid answer out look like, so a malformed one is caught immediately.</td></tr>
+          <tr><td>runtime_config.py</td><td class="role"><strong>The settings reader.</strong> Loads this agent's section of <span class="f">app/config.yaml</span> and rejects anything invalid at startup.</td></tr>
+          <tr><td>telemetry_logging.py</td><td class="role"><strong>The log.</strong> Writes one machine-readable line per event, all tagged with the conversation id so a chat can be traced end to end.</td></tr>
+          <tr><td>model_cost_meter.py</td><td class="role"><strong>The meter.</strong> Turns each AI reply's usage into a money figure and logs it.</td></tr>
+          <tr><td>backoff_retry.py</td><td class="role"><strong>The retry rule.</strong> When a call fails for a passing reason, waits a moment and tries again — a few times, never forever.</td></tr>
+          <tr><td>correlation_ids.py</td><td class="role"><strong>The label maker.</strong> Produces a tracking id for log lines written before a conversation id is available.</td></tr>
+          <tr><td>kb_index.json</td><td class="role"><strong>The articles themselves.</strong> Ships with the code and is read once at startup.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================= 7. SETTINGS ================= -->
+  <section>
+    <div class="shead"><span class="snum">07</span><h2>Where the settings come from</h2></div>
+    <p class="lede col">Three places, deliberately kept separate.</p>
+    <div class="sources">
+      <div class="source">
+        <span class="knum">A</span>
+        <div class="stext">
+          <h3>The connection to the AI &mdash; handed in, never opened here</h3>
+          <p>The application signs in to Azure AI Foundry once when it starts, and passes that same
+             connection to every agent. This agent uses it as given. That is why no address or
+             credential appears anywhere in this folder.</p>
+        </div>
+      </div>
+      <div class="source">
+        <span class="knum">B</span>
+        <div class="stext">
+          <h3>app/config.yaml &mdash; the agent's own dials</h3>
+          <p>Which AI agent to call, how long one call may take, how many times it may fetch the
+             articles, the price list used for cost, and the logging level. Read by
+             <span class="f">runtime_config.py</span> under the <span class="f">classification_agent</span> heading.</p>
+        </div>
+      </div>
+      <div class="source">
+        <span class="knum">C</span>
+        <div class="stext">
+          <h3>Environment settings &mdash; for changing things without a redeploy</h3>
+          <p><span class="f">CLASSIFICATION_AGENT_NAME</span> and
+             <span class="f">CLASSIFICATION_AGENT_VERSION</span> override the two values above.
+             Nothing secret is ever kept in a file.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 8. RAILS ================= -->
+  <section>
+    <div class="shead"><span class="snum">08</span><h2>The guard rails</h2></div>
+    <p class="lede col">
+      Four rules exist so a single chat message can never hang, cost an unbounded amount, or
+      point someone at an article that does not exist.
+    </p>
+    <div class="rails">
+      <div class="rail">
+        <h3>Made-up articles are refused</h3>
+        <p>Every article number the AI offers is checked against the real list. A number that
+           is not in it is rejected and the AI is asked to correct itself.</p>
+      </div>
+      <div class="rail">
+        <h3>A limit on fetches</h3>
+        <p>The articles can be fetched only so many times within one reply. After that the AI
+           is told to decide with what it already has.</p>
+      </div>
+      <div class="rail">
+        <h3>A limit on the clock</h3>
+        <p>The whole reply carries a deadline. When it passes, the conversation is handed to a
+           person rather than leaving someone watching a spinner.</p>
+      </div>
+      <div class="rail">
+        <h3>Stumbles are retried, failures are not hidden</h3>
+        <p>A brief network problem is retried a few times with a growing pause. A real failure
+           is reported honestly instead of being dressed up as an answer.</p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    app/agents/classification_agent/explain.html &middot; entry point: main.py &rarr; classify(conversation_id, message)
+  </footer>
+
+</main>
+</body>
+</html>
