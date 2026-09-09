@@ -5,256 +5,260 @@
 # Date              : <fill: date>                                                                 #
 #                                                                                                  #
 # Purpose of file:                                                                                 #
-# In-process knowledge-base SOURCE supplying the candidate articles the agent selects from.        #
-#   1. Load a local kb_index.json whose records mirror the ServiceNow search-result shape.         #
-#   2. Return ALL loaded records as candidates for the Foundry agent to choose from (no scoring).  #
-#   3. Expose is_known_kb_id so the turn orchestrator can reject fabricated article numbers.       #
+# The knowledge-base SOURCE: run one search and shape the result into candidates for the agent.    #
+#   1. Ask the search endpoint for the articles matching the agent's search description.           #
+#   2. Reduce each result to the four fields the agent needs to choose between articles.           #
+#   3. Clean the text of search markup and escaped characters.                                     #
+#   4. Cap how many candidates one search hands back.                                              #
+#                                                                                                  #
+# Why the result is reduced:                                                                       #
+#   A search result carries record identifiers, table names, duplicated display values, per-field  #
+#   labels and a highlighted snippet of the same article body. None of that helps the agent pick   #
+#   an article, and every character of it is charged as input tokens on the call that follows.     #
+#   A search can return thirty results and one turn can run several searches, so reducing each     #
+#   record is what keeps a turn affordable and inside its time budget.                             #
 #                                                                                                  #
 # Source:-                                                                                         #
-#   - Standard library json parses the local index file into Python dicts.                         #
+#   - Standard library html/re supply entity unescaping and the search-markup stripper.            #
 #   - typing (Any / Optional) supplies the type hints used on the public API surface.              #
-#   - telemetry_logging (LogFactory / StructuredLogger) provides the structured JSON logger;       #
-#       every load / candidate / skip event is logged with a stable schema + correlation id.       #
+#   - servicenow_search_client supplies ServiceNowSearchClient + ServiceNowSearchError.            #
+#   - telemetry_logging (LogFactory / StructuredLogger) provides the structured JSON logger.       #
 ####################################################################################################
 
 # ============================================ Imports =============================================
 from __future__ import annotations  # Enable postponed evaluation of annotations (PEP 563) for forward hints  # future import
 
-import json  # Parse the local kb_index.json file into Python objects                               # stdlib json
-from typing import Any, Optional  # Type hints for arbitrary record values and optional arguments   # stdlib typing
+import html  # Turn escaped entities such as &quot; back into their characters                      # stdlib html
+import re  # Strip the search-markup tags and collapse runs of whitespace                           # stdlib re
+from typing import Any, Optional  # Type hints for record values and optional arguments             # stdlib typing
 
+from .servicenow_search_client import ServiceNowSearchClient, ServiceNowSearchError  # Search client + its error  # search client
 from .telemetry_logging import LogFactory, StructuredLogger  # Structured logger factory + logger type  # logging
+
+# The search service wraps matched words in markup so a user interface can highlight them. It is
+# noise to a model, so it is taken out before the text is handed over.
+_SEARCH_MARKUP_PATTERN = re.compile(r"</?highlight>", re.IGNORECASE)  # Opening/closing markup tags  # markup regex
+
+# Runs of whitespace and line breaks are collapsed to single spaces so the text stays compact.
+_WHITESPACE_RUN_PATTERN = re.compile(r"\s+")  # Any run of whitespace                                # whitespace regex
+
+# The result columns worth reading, mapped to the name each becomes in a candidate.
+_TITLE_FIELD = "short_description"  # The article's title line                                       # title field
+_NUMBER_FIELD = "number"  # The article number the agent resolves with                               # number field
+_CONTENT_FIELD = "text"  # The article body                                                          # content field
+_CATEGORY_FIELD = "kb_category"  # The article's category                                            # category field
 
 
 # =========================================== Exceptions ==========================================
-class KnowledgeBaseSourceError(Exception):  # Domain error raised when the local index cannot load
-    """Raised when the local knowledge-base index is missing, unreadable or malformed.
+class KnowledgeBaseSourceError(Exception):
+    """Raised when the knowledge base could not be searched.
 
     What this class is:
-        - The single domain error for the knowledge-base source: it signals that the local index
-          could not be loaded (missing file, invalid JSON, or a non-list "searchResults") in one
-          typed error.
+        - The single domain error this module raises, so the turn orchestrator catches one type
+          however the search failed.
 
     Why this exists:
-        - To give the turn orchestrator one specific exception to catch, and to keep the message
-          generic so filesystem paths / parser internals are never leaked to the caller.
-
-    Security and production notes:
-        1. The message is intentionally generic - it never embeds the file path, raw file bytes or
-           the underlying parser exception text, so no internals reach an end user.
-        2. Every failure to obtain the knowledge base surfaces as this one error, so the caller
-           contract stays the same whatever the source is.
+        - To keep the message generic, so no endpoint URL, credential or upstream error body can
+          travel back to the caller and reach an end user.
 
     Example:
-        >>> raise KnowledgeBaseSourceError("The knowledge-base source could not be loaded.")  # doctest: +SKIP
+        >>> raise KnowledgeBaseSourceError("The knowledge base could not be searched.")  # doctest: +SKIP
     """
 
 
 # ======================================== Knowledge-base source ==================================
-class KnowledgeBaseSource:  # Loads the local ServiceNow-shaped index and returns all records as candidates
-    """In-process knowledge-base source supplying the candidate articles for one search.
+class KnowledgeBaseSource:
+    """Search the knowledge base and hand the agent a clean set of candidate articles.
 
     What this class is:
-        - The knowledge-base source: it loads a local kb_index.json whose records mirror the
-          ServiceNow search-result shape and returns them as the candidate pool. Selection is left
-          entirely to the Foundry agent.
+        - The seam between the turn orchestrator and the knowledge base. It runs one search per
+          request and reduces each result to the fields an agent needs to choose an article:
+          its number, its title, its category and its body.
 
     Why this exists:
-        - To hold the knowledge base behind one stable seam. The candidate contract is a list of
-          ServiceNow-shaped dicts, so a source that returns the same record shape slots in here
-          without any downstream code change.
+        - To keep the shape of the search service out of the turn loop. The orchestrator asks for
+          candidates and receives a list of small, uniform dicts, whatever the service returns.
 
     Security and production notes:
-        1. Article numbers and content come from the trusted local index (returned verbatim); no
-           model touches them here, so nothing is invented or paraphrased by this module.
-        2. Grounding (is_known_kb_id) lets the turn orchestrator reject any article id the agent
-           fabricates by validating it against the numbers actually present in the index.
-        3. The whole candidate pool is handed to the agent on every search, so the index size
-           directly drives per-turn input tokens and latency. Keep the pool scoped, or filter
-           behind this seam.
+        1. Article text comes from the search service and is passed through verbatim apart from
+           markup stripping and length capping. No model rewrites it here, so nothing is invented.
+        2. Article text is untrusted content: it is placed in the agent's input, so the prompt must
+           treat the candidate block as data rather than as instructions.
+        3. A failed search is raised, not returned as an empty list. An empty list is
+           indistinguishable from "nothing matched" and would end conversations as though the
+           knowledge base had been read successfully.
 
     Example:
-        >>> source = KnowledgeBaseSource("kb_index.json", log_factory)  # doctest: +SKIP
-        >>> source.is_known_kb_id("KB0024755")  # doctest: +SKIP
-        True
+        >>> source.search("outlook is not working", "cid")  # doctest: +SKIP
+        [{'kb_id': 'KB0024755', 'title': '...', 'category': '...', 'content': '...'}]
     """
 
-    def __init__(self, index_path: str, log_factory: LogFactory) -> None:  # Load the index + build the number set
-        """Read and parse the local index, then build the known-number set.
+    def __init__(  # Keep the search client and the shaping limit
+        self,
+        search_client: ServiceNowSearchClient,  # Client that performs one search                    # search client
+        log_factory: LogFactory,  # Factory used to obtain the structured logger                     # log factory
+        max_candidates: int,  # Most candidates one search may hand back                             # candidate cap
+    ) -> None:
+        """Store the search client and the limit applied to every result.
 
-        What this method does:
-            - Reads + JSON-parses the file at index_path, takes the list under "searchResults"
-              (default [] when absent), and stores it as self._records. It then builds
-              self._known_numbers from each record's "number" column for O(1) grounding.
+        What this method is:
+            - The constructor. It keeps its collaborators and the limit that bounds how many
+              articles one search can put in front of the agent. It performs no network work.
 
-        Why it exists:
-            - To load the knowledge-base source once per worker so every turn reuses the parsed
-              records and the pre-built number set instead of re-reading the file.
-
-        Security and production notes:
-            1. Records with no resolvable "number" are skipped (a WARNING logs the skipped count) so
-               they can never be handed out as an ungroundable candidate id.
-            2. A missing file, invalid JSON or a non-list "searchResults" raises the generic domain
-               error (after an ERROR log) - no path or parser internals reach the caller.
+        Why the limit is injected:
+            - It trades answer quality against tokens and latency, so it belongs in configuration
+              where it can be tuned against real searches rather than fixed in code.
 
         Args:
-            index_path: Filesystem path to the local ServiceNow-shaped kb_index.json file.
-            log_factory: Factory used to obtain the structured logger for this component.
+            search_client: The client that performs one search.
+            log_factory: Factory used to obtain the structured logger.
+            max_candidates: Most candidates one search may hand back.
 
         Returns:
             None.
 
-        Raises:
-            KnowledgeBaseSourceError: If the file is missing, not valid JSON, or "searchResults"
-                is present but is not a list.
-
         Example:
-            >>> KnowledgeBaseSource("kb_index.json", log_factory)  # doctest: +SKIP
+            >>> KnowledgeBaseSource(client, log_factory, 15)  # doctest: +SKIP
         """
-        self._index_path = index_path  # Store the index path for the read below (never surfaced)    # index path
-        self._logger: StructuredLogger = log_factory.get_logger("servicenow_kb_source")  # Named structured logger  # logger
-
-        # --- Read + parse the local index file; any failure becomes the generic domain error ---
-        try:  # Attempt to read and JSON-parse the local index file                                  # load try
-            with open(index_path, "r", encoding="utf-8") as index_file:  # Open the index for UTF-8 reading  # open file
-                index_data = json.load(index_file)  # Parse the file contents into a Python object   # parse json
-        except (OSError, ValueError) as load_error:  # File-not-found / unreadable / invalid-JSON    # load failed
-            self._logger.log(  # Log the load failure at ERROR with the exception class only         # log error
-                event="kb_source_load_failed",  # Event name for a load failure                      # event
-                correlation_id="startup",  # No per-turn id at construction time                     # correlation id
-                level="ERROR",  # Log at ERROR severity                                              # level
-                error_type=type(load_error).__name__,  # Record the exception class name only        # error type
-            )
-            raise KnowledgeBaseSourceError("The knowledge-base source could not be loaded.") from load_error  # Generic domain error  # raise domain
-
-        # --- Extract the searchResults list (default []); a present-but-non-list value is invalid ---
-        raw_records = index_data.get("searchResults", []) if isinstance(index_data, dict) else None  # Take the list or flag bad shape  # take list
-        if not isinstance(raw_records, list):  # "searchResults" must be a list (or absent -> [])     # shape check
-            self._logger.log(  # Log the invalid-shape failure at ERROR                               # log error
-                event="kb_source_invalid_shape",  # Event name for a bad top-level shape             # event
-                correlation_id="startup",  # No per-turn id at construction time                     # correlation id
-                level="ERROR",  # Log at ERROR severity                                              # level
-            )
-            raise KnowledgeBaseSourceError("The knowledge-base source is malformed.")  # Generic domain error  # raise domain
-
-        self._records: list[dict] = raw_records  # Store all parsed records as the candidate pool     # store records
-
-        # --- Build the known-number set; skip (and count) records with no resolvable number ---
-        self._known_numbers: set[str] = set()  # Accumulator for the uppercased, stripped article numbers  # number set
-        skipped_count = 0  # Count records skipped because they lack a resolvable "number"            # skip counter
-        for record in self._records:  # Iterate over every loaded record                             # each record
-            number_value = self._number_of(record)  # Pull this record's "number" column value        # get number
-            if not number_value or not number_value.strip():  # Skip records with no usable number    # missing number
-                skipped_count += 1  # Increment the skipped-record counter                           # bump skip
-                continue  # Move on without adding to the known-number set                           # skip record
-            self._known_numbers.add(number_value.strip().upper())  # Store the canonical (upper) number  # add number
-
-        if skipped_count:  # Only log the skip WARNING when at least one record was skipped           # any skipped?
-            self._logger.log(  # Warn that some records lacked a resolvable "number"                  # log warning
-                event="kb_source_records_skipped",  # Event name for the skipped-record case         # event
-                correlation_id="startup",  # No per-turn id at construction time                     # correlation id
-                level="WARNING",  # Log at WARNING severity                                          # level
-                skipped_count=skipped_count,  # Record how many records were skipped                 # skipped count
-            )
-
-        self._logger.log(  # Log a one-time INFO that the source finished loading                    # log info
-            event="kb_source_loaded",  # Event name for a completed load                             # event
-            correlation_id="startup",  # No per-turn id at construction time                         # correlation id
-            record_count=len(self._records),  # Record how many candidates are available             # record count
-        )
+        self._search_client = search_client  # Performs the search                                   # search client
+        self._logger: StructuredLogger = log_factory.get_logger("servicenow_kb_source")  # Named logger  # logger
+        self._max_candidates = max_candidates  # Cap on how many candidates go back                  # candidate cap
 
     # ============================================ Public API =====================================
-    def get_all_candidates(self, correlation_id: str) -> list[dict[str, Any]]:  # Return ALL loaded records
-        """Return every loaded record as a candidate for the agent to choose from.
+    def search(self, query: str, correlation_id: str) -> list[dict[str, Any]]:
+        """Return the candidate articles for one search description.
 
         What this method does:
-            - Returns self._records unchanged: the full candidate pool the Foundry agent selects
-              from. Filtering, ranking and scoring are all left to the agent.
+            - Sends the agent's search description to the endpoint, then reduces and cleans each
+              result so the agent receives only what it needs to choose between articles.
 
-        Why it exists:
-            - To model the search seam: the agent is handed the search-result set and makes its own
-              selection from it.
+        Why the query matters:
+            - The search text is written by the agent, which decides how to describe the user's
+              problem. It is passed straight through, so the quality of the candidate set follows
+              directly from how the agent phrases its search.
 
         Security and production notes:
-            1. Records are returned verbatim from the trusted local index - no model touches them,
-               so nothing is invented or reworded on the way out.
+            1. Results with no article number are dropped, since the agent could not resolve with
+               one, and their count is logged.
+            2. A search failure is raised rather than returned as an empty list.
 
         Args:
+            query: The search description the agent asked for.
             correlation_id: The end-to-end correlation id for this turn.
 
         Returns:
-            The list of all loaded records (each a ServiceNow-shaped dict); possibly empty.
+            The candidate articles, each a dict of kb_id, title, category and content; possibly
+            empty when nothing matched.
+
+        Raises:
+            KnowledgeBaseSourceError: If the search endpoint could not be reached or read.
 
         Example:
-            >>> source.get_all_candidates("cid")  # doctest: +SKIP
-            [{'sysId': '...', 'title': '...', 'columns': [...]}, ...]
+            >>> source.search("outlook is not working", "cid")  # doctest: +SKIP
+            [{'kb_id': 'KB0024755', 'title': '...', 'category': '...', 'content': '...'}]
         """
-        self._logger.log(  # Log that the candidate pool was handed back                             # log info
+        try:  # Ask the endpoint for the articles matching this search description                   # try search
+            results = self._search_client.search(query, correlation_id)  # Run the search            # run search
+        except ServiceNowSearchError as search_error:  # The endpoint could not be reached or read   # search failed
+            raise KnowledgeBaseSourceError("The knowledge base could not be searched.") from search_error  # Domain error  # raise
+
+        candidates: list[dict[str, Any]] = []  # The reduced candidates handed to the agent          # accumulator
+        skipped_count = 0  # Results dropped because they carry no article number                    # skip counter
+        for result in results:  # Reduce each result in turn                                         # each result
+            candidate = self._candidate_from(result)  # Pull out the fields the agent needs          # reduce
+            if candidate is None:  # No article number, so the agent could not resolve with it       # unusable?
+                skipped_count += 1  # Count it and move on                                           # bump skip
+                continue  # Leave it out of the candidate set                                        # skip result
+            candidates.append(candidate)  # Keep this candidate                                      # keep
+            if len(candidates) >= self._max_candidates:  # The cap for one search has been reached   # capped?
+                break  # Stop reducing; the rest would only add tokens                               # stop
+
+        if skipped_count:  # Only log the skip when at least one result was dropped                  # any skipped?
+            self._logger.log(  # Note how many results carried no article number                     # log warning
+                event="kb_results_skipped",  # Event name                                            # event
+                correlation_id=correlation_id,  # Log key                                            # log key
+                level="WARNING",  # Severity level                                                   # level
+                skipped_count=skipped_count,  # How many were dropped                                # skipped count
+            )
+
+        self._logger.log(  # Log the shape of what the agent is about to receive                     # log info
             event="kb_candidates_returned",  # Event name for a candidate hand-off                   # event
-            correlation_id=correlation_id,  # Propagate the per-turn correlation id                  # correlation id
-            candidate_count=len(self._records),  # Record how many candidates were returned          # candidate count
+            correlation_id=correlation_id,  # Log key                                                # log key
+            result_count=len(results),  # How many results the search returned                       # result count
+            candidate_count=len(candidates),  # How many candidates the agent receives               # candidate count
         )
-        return self._records  # Return every loaded record as the candidate pool                     # return all
-
-    def is_known_kb_id(self, kb_id: Optional[str]) -> bool:  # Report whether an article number is a REAL index entry
-        """Return True only when kb_id is a real article number in the loaded index.
-
-        What this method does:
-            - Normalises kb_id (strip + uppercase) and reports whether it is present in the set of
-              numbers built from the trusted index.
-
-        Why it exists:
-            - It is the turn orchestrator's anti-hallucination guard: a number the agent recalls
-              that is really in the index is a valid resolution, while one absent from the index is
-              a fabrication to reject.
-
-        Security and production notes:
-            1. Grounding is strict-equality against the index-derived number set - it can never be
-               satisfied by an id the agent invented.
-            2. Matching is case-insensitive and whitespace-trimmed so a valid number is not rejected
-               over trivial formatting differences.
-
-        Args:
-            kb_id: The article number the agent tried to resolve with (may be None or blank).
-
-        Returns:
-            True if kb_id is truthy and its stripped, uppercased form is a known number; else False.
-
-        Example:
-            >>> source.is_known_kb_id("kb0024755")  # doctest: +SKIP
-            True
-        """
-        return bool(kb_id) and kb_id.strip().upper() in self._known_numbers  # Real only when present in the number set  # grounded?
+        return candidates  # Hand the reduced candidate set back                                     # return candidates
 
     # ========================================= Internal helpers ==================================
-    @staticmethod  # Declare a static helper (needs neither instance nor class state)
-    def _number_of(record: dict) -> Optional[str]:  # Pull the "number" column value from one record
-        """Extract the article number from a single ServiceNow-shaped record.
+    def _candidate_from(self, result: dict) -> Optional[dict[str, Any]]:
+        """Reduce one search result to a candidate, or None when it carries no article number.
 
         What this method does:
-            - Scans record["columns"] for the entry whose fieldName is "number" and returns its
-              "value" (falling back to "displayValue"); returns None when neither is present.
+            - Reads the four columns worth keeping, cleans their text, and assembles the small dict
+              the agent receives. Anything else the result carries is left behind.
 
-        Why it exists:
-            - The article number lives inside the columns list (mirroring the ServiceNow shape), so
-              both the load-time number set and any caller need one shared way to read it.
-
-        Security and production notes:
-            1. Reads only from the trusted local record - it neither invents nor rewrites a number.
-            2. Returns None (rather than raising) on a missing/blank column so the caller decides
-               how to handle a record with no usable number.
+        Why the article number decides:
+            - It is what the agent resolves with, so a result without one cannot become an answer
+              and is worth no tokens.
 
         Args:
-            record: One ServiceNow-shaped record (expects a "columns" list of field dicts).
+            result: One search result from the endpoint.
 
         Returns:
-            The "number" column's value (or displayValue) as a string, or None when absent.
+            The candidate dict, or None when the result carries no article number.
 
         Example:
-            >>> KnowledgeBaseSource._number_of({"columns": [{"fieldName": "number", "value": "KB0024755"}]})
-            'KB0024755'
+            >>> source._candidate_from(result)  # doctest: +SKIP
+            {'kb_id': 'KB0024755', 'title': '...', 'category': '...', 'content': '...'}
         """
-        for column in record.get("columns", []):  # Iterate over the record's column dicts (default [])  # each column
-            if isinstance(column, dict) and column.get("fieldName") == "number":  # Match the "number" field  # match field
-                return column.get("value") or column.get("displayValue")  # Prefer value, fall back to displayValue  # read number
-        return None  # No "number" column was found in this record                                   # not found
+        columns = result.get("columns") if isinstance(result, dict) else None  # The result's columns  # get columns
+        if not isinstance(columns, list):  # A result with no columns carries nothing to read        # no columns?
+            return None  # Cannot build a candidate                                                  # skip
+
+        values: dict[str, str] = {}  # Column values, keyed by field name                            # value map
+        for column in columns:  # Read each column once                                              # each column
+            if not isinstance(column, dict):  # Skip anything that is not a field entry              # not a field?
+                continue  # Move on                                                                  # skip
+            field_name = column.get("fieldName")  # Which field this column holds                    # field name
+            if field_name in (_TITLE_FIELD, _NUMBER_FIELD, _CONTENT_FIELD, _CATEGORY_FIELD):  # Wanted?  # wanted field?
+                # displayValue carries the readable form where the two differ, as it does for the
+                # category, whose value is an internal identifier.
+                raw_value = column.get("displayValue") or column.get("value") or ""  # Readable form  # read value
+                values[field_name] = str(raw_value)  # Keep it as text                               # store value
+
+        kb_id = self._clean(values.get(_NUMBER_FIELD, "")).strip()  # The article number             # article number
+        if not kb_id:  # Without a number the agent has nothing to resolve with                      # no number?
+            return None  # Drop this result                                                          # skip
+
+        return {  # The candidate the agent chooses from                                             # build candidate
+            "kb_id": kb_id,  # What the agent resolves with                                          # article number
+            "title": self._clean(values.get(_TITLE_FIELD, "")),  # The article's title line          # title
+            "category": self._clean(values.get(_CATEGORY_FIELD, "")),  # Helps tell articles apart   # category
+            "content": self._clean(values.get(_CONTENT_FIELD, "")),  # The article body              # content
+        }
+
+    @staticmethod  # Declare a static helper (needs neither instance nor class state)
+    def _clean(text: str) -> str:
+        """Return the text with search markup and escapes resolved.
+
+        What this method does:
+            - Strips the highlight markup the search service adds, turns escaped entities back into
+              their characters, and collapses runs of whitespace.
+
+        Why it exists:
+            - The text is going into a model's input. Markup and repeated whitespace cost tokens and
+              carry no meaning, and an escaped entity in the middle of a sentence reads as noise.
+
+        Args:
+            text: The raw text from a search result column.
+
+        Returns:
+            The cleaned text.
+
+        Example:
+            >>> KnowledgeBaseSource._clean("Mailbox <highlight>Not Working</highlight> &quot;now&quot;")
+            'Mailbox Not Working "now"'
+        """
+        cleaned = _SEARCH_MARKUP_PATTERN.sub("", text or "")  # Take out the highlight markup        # strip markup
+        cleaned = html.unescape(cleaned)  # Turn &quot; and friends back into characters             # unescape
+        return _WHITESPACE_RUN_PATTERN.sub(" ", cleaned).strip()  # Collapse whitespace runs         # collapse

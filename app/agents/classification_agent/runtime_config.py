@@ -49,35 +49,6 @@ _ENV_OVERRIDES: dict[str, tuple[str, str]] = {  # Map of env var name to the (se
 }
 
 
-# ======================================== Path resolution ========================================
-def resolve_path(relative_or_absolute_path: str) -> Path:  # Resolve a data path against the agent folder
-    """Resolve a path against this agent's folder (absolute paths pass through).
-
-    What this function is:
-        - The single path anchor for this agent's data files: it turns a relative config path into
-          an absolute one under AGENT_ROOT, and returns already-absolute paths unchanged.
-
-    Why this exists:
-        - The knowledge-base index ships beside this agent's code, while the configuration naming
-          it lives at the application root. Anchoring here keeps a relative path in that shared
-          config file pointing at THIS agent's data rather than at the application root.
-
-    Args:
-        relative_or_absolute_path: A relative or absolute path string.
-
-    Returns:
-        An absolute Path.
-
-    Example:
-        >>> resolve_path("kb_index.json")  # doctest: +SKIP
-        PosixPath('/home/site/wwwroot/app/agents/classification_agent/kb_index.json')
-    """
-    candidate_path = Path(relative_or_absolute_path)  # Wrap the input string as a Path object       # wrap path
-    if candidate_path.is_absolute():  # If the path is already absolute                              # absolute check
-        return candidate_path  # Return it unchanged                                                 # pass through
-    return (AGENT_ROOT / candidate_path).resolve()  # Otherwise anchor it to this agent's folder     # anchor + resolve
-
-
 # ========================================= Config models =========================================
 class EventHubConfig(BaseModel):  # Typed model for Event Hub log-forwarding settings
     """Event Hub log-forwarding settings.
@@ -97,19 +68,40 @@ class EventHubConfig(BaseModel):  # Typed model for Event Hub log-forwarding set
     event_hub_name: str = ""  # Target Event Hub name (default empty)                                # hub name
 
 
-class KnowledgeBaseConfig(BaseModel):  # Typed model for knowledge-base source settings
-    """Knowledge-base source settings.
+class KnowledgeBaseConfig(BaseModel):  # Typed model for how a search result is shaped for the agent
+    """How much of a search result reaches the agent.
 
     What this model is:
-        - The typed shape of the in-process knowledge-base settings: which index file to load as
-          the candidate pool the agent selects from.
+        - The typed shape of the limit applied to every search: how many articles are handed over.
 
-    Why this exists:
-        - Knowledge-base selection runs in-process, so the loader only needs the index location;
-          the path is resolved against this agent's folder by resolve_path.
+    Why it is configurable:
+        - It trades the agent's ability to tell articles apart against tokens and latency. A search
+          can return dozens of articles and one turn can run several searches, so this is the
+          setting that decides what a turn costs. Tune it against real searches.
     """
 
-    index_path: str = "kb_index.json"  # Path to the KB index (relative paths anchor to this agent's folder)  # index location
+    max_candidates: int = 15  # Most articles one search hands to the agent                          # candidate cap
+
+
+class ServiceNowSearchConfig(BaseModel):  # Typed model for the knowledge search call policy
+    """Call policy for the ServiceNow knowledge search endpoint.
+
+    What this model is:
+        - The typed shape of the non-secret settings for the search call: how long one request may
+          take, how many connections to keep alive, and whether the certificate is verified.
+
+    Where the credentials are:
+        - The endpoint URL, bearer token, registration id and account are read from the
+          environment by load_servicenow_credentials, so no secret is ever written in the YAML.
+
+    Security and production notes:
+        1. verify_tls should stay True. Turning it off disables certificate checking and is only
+           ever appropriate against a test endpoint on a private network.
+    """
+
+    request_timeout_seconds: int = 20  # Hard timeout for one search request, in seconds             # call timeout
+    pool_maxsize: int = 10  # Outbound connections kept alive for reuse                              # pool size
+    verify_tls: bool = True  # Whether the server certificate is verified                            # verify tls
 
 
 class RetryConfig(BaseModel):  # Typed model for retry/backoff settings
@@ -216,6 +208,7 @@ class AgentSettings(BaseModel):  # Top-level typed model aggregating this agent'
     """
 
     knowledge_base: KnowledgeBaseConfig = Field(default_factory=KnowledgeBaseConfig)  # KB source settings  # kb section
+    servicenow_search: ServiceNowSearchConfig = Field(default_factory=ServiceNowSearchConfig)  # Search call policy  # search section
     foundry: FoundryConfig = Field(default_factory=FoundryConfig)  # Foundry agent settings          # foundry section
     event_hub: EventHubConfig = Field(default_factory=EventHubConfig)  # Event Hub settings           # event hub section
     retry: RetryConfig = Field(default_factory=RetryConfig)  # Retry settings                        # retry section
@@ -267,6 +260,106 @@ def load_settings() -> AgentSettings:  # Load and validate this agent's section 
         )
     section_data = _apply_env_overrides(section_data)  # Overlay any environment-variable overrides  # apply overrides
     return AgentSettings.model_validate(section_data)  # Validate the section and return it          # validate + return
+
+
+class ServiceNowCredentials(BaseModel):  # Typed model for the search endpoint's connection details
+    """Connection details for the ServiceNow knowledge search endpoint.
+
+    What this model is:
+        - The typed shape of the values read from the environment: where to send a search, how to
+          authenticate, and the fixed parameters every request carries.
+
+    Why these live in the environment:
+        - The token and registration id are secrets, and the environment is the one place they can
+          be supplied without being written into a file that is committed. Locally they come from
+          this folder's .env; on App Service they are Application Settings, ideally Key Vault
+          references, which arrive as ordinary environment variables.
+
+    Security and production notes:
+        1. Nothing here is ever logged. The client sends the token as a header and logs only the
+           status code and the number of records returned.
+        2. user_id is the account the search runs as. The agent is not given the end user's own
+           identity, so every search is attributed to this account until that value is passed
+           through to the agent.
+    """
+
+    base_url: str  # Endpoint URL, without a query string                                            # base url
+    bearer_token: str  # Sent as "Authorization: Bearer <token>"                                     # token
+    registration_id: str  # Identifies this integration to the service                               # registration
+    user_id: str  # The account the search runs as                                                   # user id
+    req_type: str = "search"  # Fixed 'reqType' query parameter                                      # req type
+    search_type: str = "knowledge"  # Fixed 'searchType' query parameter                             # search type
+
+
+def load_servicenow_credentials() -> ServiceNowCredentials:  # Read the search endpoint's details from the environment
+    """Read the knowledge search connection details from the environment.
+
+    What this function is:
+        - The single reader of the search endpoint's credentials. It loads this folder's .env when
+          one is present, then validates the four required values.
+
+    Why the .env is loaded here:
+        - The application loads its own .env from the repository root. This agent's credentials sit
+          beside its code, so this is the one place that file is read. Values already present in
+          the environment always win, so App Service settings are never overwritten by a stray file.
+
+    Security and production notes:
+        1. A missing or blank value raises with the NAME of the setting only - never a value, and
+           never a partial token.
+        2. The returned object is held in memory by the search client for the life of the worker
+           and is not written anywhere.
+
+    Args:
+        None.
+
+    Returns:
+        The validated ServiceNowCredentials.
+
+    Raises:
+        ValueError: If any required value is missing or blank.
+
+    Example:
+        >>> credentials = load_servicenow_credentials()  # doctest: +SKIP
+        >>> credentials.req_type  # doctest: +SKIP
+        'search'
+    """
+    try:  # Load this folder's .env when python-dotenv is installed                                  # try dotenv
+        from dotenv import load_dotenv  # Imported here so the package stays optional                # lazy import
+
+        # override=False: a value already in the environment (an Application Setting) always wins.
+        load_dotenv(AGENT_ROOT / ".env", override=False)  # Read the .env beside this agent's code   # load env
+    except ImportError:  # python-dotenv is absent; the real environment is used as-is               # no dotenv
+        pass  # Continue with whatever the process already has                                       # carry on
+
+    values = {  # Read each setting from the environment                                             # read env
+        "base_url": os.environ.get("SERVICENOW_API_BASE_URL", "").strip(),  # Endpoint URL           # base url
+        "bearer_token": os.environ.get("SERVICENOW_API_BEARER_TOKEN", "").strip(),  # Token          # token
+        "registration_id": os.environ.get("SERVICENOW_API_REGISTRATION_ID", "").strip(),  # Registration id  # registration
+        "user_id": os.environ.get("SERVICENOW_API_USER_ID", "").strip(),  # Account to search as     # user id
+        "req_type": os.environ.get("SERVICENOW_API_REQ_TYPE", "search").strip(),  # Fixed parameter  # req type
+        "search_type": os.environ.get("SERVICENOW_API_SEARCH_TYPE", "knowledge").strip(),  # Fixed parameter  # search type
+    }
+
+    required_settings = {  # The four that have no sensible default                                  # required map
+        "SERVICENOW_API_BASE_URL": values["base_url"],  # Endpoint URL                               # base url
+        "SERVICENOW_API_BEARER_TOKEN": values["bearer_token"],  # Token                              # token
+        "SERVICENOW_API_REGISTRATION_ID": values["registration_id"],  # Registration id              # registration
+        "SERVICENOW_API_USER_ID": values["user_id"],  # Account to search as                         # user id
+    }
+    # A value still carrying its <angle-bracket> placeholder counts as unset. Without this a
+    # half-filled .env passes the check and the first search fails against a hostname of
+    # "<host>", which reads as a network fault rather than the missing setting it really is.
+    missing = sorted(  # Report the names, never the values                                          # find missing
+        name for name, value in required_settings.items()  # Each required setting                   # each setting
+        if not value or (value.startswith("<") and value.endswith(">"))  # Blank, unset or a placeholder  # unusable?
+    )
+    if missing:  # One or more settings still need a real value                                      # any missing?
+        raise ValueError(  # Fail fast with an actionable message                                    # raise
+            "Knowledge search settings still need a value: " + ", ".join(missing) + ". "  # Which names  # names
+            f"Set them in the environment, or in {AGENT_ROOT / '.env'} (copy params.env to .env)."  # Where  # where
+        )
+
+    return ServiceNowCredentials.model_validate(values)  # Validate and return the connection details  # validate
 
 
 def _apply_env_overrides(section_data: dict) -> dict:  # Overlay selected env vars onto the parsed section

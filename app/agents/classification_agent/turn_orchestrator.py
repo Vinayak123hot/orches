@@ -13,7 +13,7 @@
 #   4. Hold every turn inside a wall-clock budget so one chat turn cannot run unbounded.           #
 #                                                                                                  #
 # Source:-                                                                                         #
-#   - runtime_config supplies load_settings / resolve_path (validated config + index path).        #
+#   - runtime_config supplies load_settings and the search endpoint's connection details.          #
 #   - correlation_ids supplies generate_correlation_id (log key when a conversation id is blank).  #
 #   - model_cost_meter supplies CostTracker (turns response token usage into a logged cost).       #
 #   - telemetry_logging supplies EventHubLogEmitter / LogFactory / StructuredLogger.               #
@@ -36,9 +36,13 @@ from pydantic import ValidationError  # Raised when a boundary payload fails sch
 from .correlation_ids import generate_correlation_id  # Log key used when no conversation id is available  # log id
 from .foundry_agent_client import FoundryAgentError, FoundryAgentGateway  # Instrumented gateway + its error  # foundry client
 from .model_cost_meter import CostTracker  # Turns response token usage into a logged cost figure    # cost meter
-from .runtime_config import load_settings, resolve_path  # Validated config + index path resolution  # config loader
+from .runtime_config import (  # Validated config and the search endpoint's connection details       # config loader
+    load_servicenow_credentials,  # Search endpoint connection details, read from the environment    # credentials
+    load_settings,  # This agent's validated section of the application config                       # settings
+)
 from .service_contracts import AgentEntryRequest, AgentEntryResponse, AgentStructuredOutput  # Turn boundary models  # contracts
-from .servicenow_kb_source import KnowledgeBaseSource, KnowledgeBaseSourceError  # In-process KB source + its error  # kb source
+from .servicenow_kb_source import KnowledgeBaseSource, KnowledgeBaseSourceError  # KB source + its error  # kb source
+from .servicenow_search_client import ServiceNowSearchClient  # Client for the knowledge search endpoint  # search client
 from .telemetry_logging import EventHubLogEmitter, LogFactory, StructuredLogger  # Logging: emitter, factory, logger  # telemetry
 
 # Strips accidental ```json ... ``` fences from the agent's reply.
@@ -272,7 +276,10 @@ class ClassificationTurnService:  # Coordinates one turn against the Foundry age
                         "user's issue."
                     )
                     continue  # Loop once more so the agent can produce a terminal reply             # loop again
-                candidates = self._knowledge_source.get_all_candidates(turn_log_id)  # Feed the candidate set  # candidates
+                candidates = self._knowledge_source.search(  # Search for what the agent asked about  # run search
+                    structured_output.query,  # The agent's own search description for this round   # query
+                    turn_log_id,  # Correlation id for logs                                          # log key
+                )
                 searches_done += 1  # Count this search against the budget                           # count search
                 self._logger.log(  # Log the search we performed                                     # log search
                     event="foundry_kb_search_performed",  # Event name                               # event
@@ -283,28 +290,15 @@ class ClassificationTurnService:  # Coordinates one turn against the Foundry age
                 input_text = self._format_candidates(structured_output.query, candidates)  # Feed candidates back  # feed back
                 continue  # Loop: send the candidates to the agent to decide                         # loop again
 
-            # Anti-hallucination guard: a 'resolved' MUST use a REAL kb_id from the index. Validating
-            # against the whole index (not just this turn's results) allows valid resolutions that
-            # reuse a candidate from an earlier turn's search (held in the conversation history), while
-            # still rejecting fabricated ids that do not exist in the knowledge base.
-            if structured_output.status == "resolved" and (  # The agent claims a resolution...      # resolved guard
-                not structured_output.kb_id  # ...with no id...                                      # missing id
-                or not self._knowledge_source.is_known_kb_id(structured_output.kb_id)  # ...or a fabricated id  # unknown id
-            ):
-                self._logger.log(  # Log the fabricated / unverified kb_id (never trust it)          # log hallucination
-                    event="foundry_hallucinated_kb_id",  # Event name                                # event
+            # A resolution is only an answer if it names an article. Without one there is nothing
+            # for the caller to act on, so the turn is handed off instead.
+            if structured_output.status == "resolved" and not structured_output.kb_id:  # No article named  # empty resolve
+                self._logger.log(  # Record that the resolution carried no article                   # log empty
+                    event="foundry_resolved_without_kb_id",  # Event name                            # event
                     correlation_id=turn_log_id,  # Log key                                           # log key
-                    level="WARNING",  # Severity level                                               # level
-                    kb_id=structured_output.kb_id,  # The id the agent tried to resolve with         # bad id
+                    level="WARNING",  # Severity level                                                # level
                 )
-                if searches_done < self._max_search_rounds:  # Budget remains -> force the agent back to real articles  # budget left
-                    input_text = (  # Nudge: only real ids from the knowledge base are allowed       # nudge text
-                        "That kb_id is not a real article in the knowledge base. You may ONLY resolve with a kb_id "
-                        "that appeared in the KB_SEARCH_RESULTS. Re-read the candidates and resolve with one of "
-                        "their kb_ids, or return no_match with a short summary of the user's issue."
-                    )
-                    continue  # Loop again so the agent can correct itself                           # loop again
-                return self._handoff_response(conv_id, structured_output.summary)  # Never emit a fabricated id  # handoff
+                return self._handoff_response(conv_id, structured_output.summary)  # Hand off        # handoff
 
             # Terminal reply: follow_up / resolved / no_match.
             return self._build_response_from_output(structured_output, conv_id)  # Map to a response  # terminal reply
@@ -589,10 +583,29 @@ def _build_turn_service(foundry_client: Any, turn_budget_seconds: float) -> Clas
         retry_max_delay_seconds=settings.retry.max_delay_seconds,  # Backoff max delay               # max delay
     )
 
-    index_path = resolve_path(settings.knowledge_base.index_path)  # Resolve the index path against this agent's folder  # index path
-    knowledge_source = KnowledgeBaseSource(  # Build the in-process knowledge-base source            # build kb source
-        index_path=str(index_path),  # Absolute path to the index shipped with this agent            # index path
+    credentials = load_servicenow_credentials()  # Read the connection details from the environment  # credentials
+    search_config = settings.servicenow_search  # Non-secret call policy from the YAML               # search cfg
+    search_client = ServiceNowSearchClient(  # Build the pooled search client                        # build client
+        base_url=credentials.base_url,  # Endpoint URL                                               # base url
+        bearer_token=credentials.bearer_token,  # Sent as the Authorization header                   # token
+        registration_id=credentials.registration_id,  # Identifies this integration                  # registration
+        user_id=credentials.user_id,  # The account the search runs as                               # user id
+        req_type=credentials.req_type,  # Fixed query parameter                                      # req type
+        search_type=credentials.search_type,  # Fixed query parameter                                # search type
+        request_timeout_seconds=search_config.request_timeout_seconds,  # Per-call timeout           # timeout
+        pool_maxsize=search_config.pool_maxsize,  # Connections kept alive for reuse                 # pool size
+        verify_tls=search_config.verify_tls,  # Certificate verification                             # verify tls
+        log_factory=log_factory,  # Logger factory for the search client                             # log factory
+        retry_max_attempts=settings.retry.max_attempts_for("servicenow_search"),  # Attempt cap      # retries
+        retry_base_delay_seconds=settings.retry.base_delay_seconds,  # Backoff base delay            # base delay
+        retry_max_delay_seconds=settings.retry.max_delay_seconds,  # Backoff ceiling                 # max delay
+    )
+
+    knowledge_base_config = settings.knowledge_base  # Limits applied to every search result         # kb cfg
+    knowledge_source = KnowledgeBaseSource(  # Build the knowledge-base source                       # build kb source
+        search_client=search_client,  # Performs one search per request                              # search client
         log_factory=log_factory,  # Logger factory for the knowledge-base source                     # log factory
+        max_candidates=knowledge_base_config.max_candidates,  # Most candidates one search returns   # candidate cap
     )
 
     return ClassificationTurnService(  # Assemble and return the turn service                         # build service

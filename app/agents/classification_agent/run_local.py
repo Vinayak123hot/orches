@@ -22,7 +22,7 @@
 # PREREQS:                                                                                         #
 #   1. AZURE_FOUNDRY_PROJECT_ENDPOINT set, in the environment or in a .env file at the repo root.  #
 #   2. app/config.yaml filled in with the Foundry agent name.                                      #
-#   3. kb_index.json present in this folder.                                                       #
+#   3. .env in this folder, filled in from params.env (the knowledge search endpoint).             #
 #   4. A signed-in credential: `az login`, or AZURE_SP_* / AZURE_* variables in the environment.   #
 #                                                                                                  #
 # This module is inert on import: everything runs under main(), so it can never affect the served  #
@@ -125,15 +125,6 @@ def _preflight() -> "tuple[object, object]":  # Verify the local prerequisites, 
     Example:
         >>> settings, agent_settings = _preflight()  # doctest: +SKIP
     """
-    agent_folder = Path(__file__).resolve().parent  # This agent's own folder                        # agent folder
-
-    index_path = agent_folder / "kb_index.json"  # The knowledge-base records the agent selects from  # index path
-    if not index_path.is_file():  # The agent cannot start without its knowledge-base index          # missing index?
-        _fail(  # Print a friendly, actionable message and stop                                     # fail out
-            "kb_index.json is not in this folder.",
-            f"Expected: {index_path}",
-        )
-
     config_path = _REPO_ROOT / "app" / "config.yaml"  # The application configuration file            # config path
     if not config_path.is_file():  # The agent's settings live in this file                          # missing config?
         _fail(  # Print a friendly, actionable message and stop                                      # fail out
@@ -167,6 +158,16 @@ def _preflight() -> "tuple[object, object]":  # Verify the local prerequisites, 
             "No Foundry agent name is configured.",
             "Set classification_agent.foundry.agent_name in app/config.yaml,",
             "or set the CLASSIFICATION_AGENT_NAME environment variable.",
+        )
+
+    from app.agents.classification_agent.runtime_config import load_servicenow_credentials  # Search settings  # credentials
+
+    try:  # Confirm the search endpoint's connection details are usable before any turn runs         # try load
+        load_servicenow_credentials()  # Read and validate them                                      # load
+    except ValueError as credentials_error:  # One or more still need a value                        # missing?
+        _fail(  # Print the message, which names the settings but never their values                 # fail out
+            "The knowledge search is not configured.",
+            str(credentials_error),
         )
 
     return settings, agent_settings  # Hand both settings objects back to the caller                  # return both

@@ -43,10 +43,27 @@ classification_agent:
     # Maximum knowledge-base fetches within one turn before the agent is handed off to the team.
     max_search_rounds: 6
 
-  # --- Knowledge-base source ---------------------------------------------------------------------
-  # A relative path is resolved against the agent's own folder, so the index ships with its code.
+  # --- How much of a search result reaches the agent ----------------------------------------------
+  # This limit trades the agent's ability to tell articles apart against tokens and latency.
+  # A search can return dozens of articles and one turn can run several searches, so this is the
+  # setting that decides what a turn costs. Tune it against real searches.
   knowledge_base:
-    index_path: "kb_index.json"
+    # Most articles one search hands to the agent.
+    max_candidates: 15
+
+  # --- Knowledge search call policy ----------------------------------------------------------------
+  # The endpoint URL and its credentials are NOT here: they are read from the environment
+  # (app/agents/classification_agent/.env locally, Application Settings when deployed).
+  # See params.env in the agent's folder for the names. Only the call policy lives in this file.
+  servicenow_search:
+    # Hard timeout for one search request. Several searches can happen inside one turn, so keep
+    # this well below the agent's per-turn budget.
+    request_timeout_seconds: 20
+    # Outbound connections kept alive for reuse. A fresh connection per search would burn the
+    # instance's outbound ports and show up under load as random timeouts.
+    pool_maxsize: 10
+    # Leave this true. Turning it off disables certificate checking.
+    verify_tls: true
 
   # --- Retry / backoff for remote calls (per-operation overrides allowed) ------------------------
   # Worst case for one call is attempts x request_timeout_seconds plus the backoff waits, and the
@@ -57,6 +74,7 @@ classification_agent:
     max_delay_seconds: 8
     per_tool_max_attempts:
       foundry_agent: 3
+      servicenow_search: 3
 
   # --- Cost tracking: PER-TOKEN prices keyed by model name ---------------------------------------
   # Derive per-token prices from the published per-1M pricing by dividing by 1_000_000.

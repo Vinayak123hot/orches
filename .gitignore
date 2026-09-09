@@ -3,10 +3,10 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 
-# Local environment: secrets and per-machine settings never belong in the repository
+# Local environment: secrets and per-machine settings never belong in the repository.
+# The tracked params.env files are placeholder templates; rename one to .env and fill it in.
 .env
 .env.*
-!.env.example
 
 # Virtual environments
 .venv/
