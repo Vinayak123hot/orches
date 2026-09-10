@@ -234,6 +234,21 @@ class Settings:
         # used to POST to are now in-process.
         self.HTTP_POOL_MAXSIZE = _int(get("HTTP_POOL_MAXSIZE", "50"), 50)
 
+        # -- Structured logging ----------------------------------------------
+        # The floor for the structured JSON records app/event_hub emits. Read here as well as
+        # at import (for basicConfig above) so build_log_factory has it on the Settings object
+        # rather than reaching for the environment itself.
+        self.LOG_LEVEL = get("LOG_LEVEL", "INFO")
+        # Forwarding those records to Event Hub, for Splunk. OFF unless the flag is set AND both
+        # names are configured -- all three are required, so the flag alone cannot start
+        # shipping records to a half-configured destination.
+        #
+        # ONCE ENABLED, THESE RECORDS LEAVE THE TENANT. Nothing put in a log field may be a user
+        # email, free text, raw device output, a raw agent response or an exception message.
+        self.EVENTHUB_ENABLED = _flag(get("EVENTHUB_ENABLED", "false"))
+        self.EVENTHUB_NAMESPACE = get("EVENTHUB_NAMESPACE", "")
+        self.EVENTHUB_NAME = get("EVENTHUB_NAME", "")
+
     @property
     def use_sqlite(self) -> bool:
         """True when we're pointed at a local SQLite file instead of Azure SQL."""

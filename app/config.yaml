@@ -84,15 +84,3 @@ classification_agent:
       gpt-4.1-mini:
         input_price: 0.0000004
         output_price: 0.0000016
-
-  # --- Structured logging ------------------------------------------------------------------------
-  logging:
-    log_level: "INFO"
-
-  # --- Structured log forwarding to Event Hub (off by default) -----------------------------------
-  # Authentication is Managed Identity by name; no connection string is stored. Enabling this
-  # requires the azure-eventhub package, which is imported only when enabled is true.
-  event_hub:
-    enabled: false
-    fully_qualified_namespace: "<fill: your-namespace.servicebus.windows.net>"
-    event_hub_name: "<fill: event hub name>"

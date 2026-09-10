@@ -45,6 +45,7 @@ from app.db.repositories import (
 )
 from app.domain.flow import SupportFlow
 from app.domain.jobs import JobRunner
+from app.event_hub import build_log_factory
 from app.services import ChatService, HistoryService, JobService
 
 # ---------------------------------------------------------------------------
@@ -61,6 +62,14 @@ foundry_client = FoundryClient(
     timeout=settings.FOUNDRY_HTTP_TIMEOUT,
     max_retries=settings.FOUNDRY_MAX_RETRIES,
 )
+
+# The structured-logging factory: one per worker process, handed to every agent so all of them
+# share one level and one Event Hub producer. Built here rather than per agent because an emitter
+# holds a connection -- one per agent would mean seven producers publishing the same stream.
+#
+# Forwarding is OFF unless EVENTHUB_ENABLED and both names are set, so this is a stdout-only
+# factory by default and enabling it is an App Setting rather than a deploy.
+log_factory = build_log_factory(settings)
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +119,9 @@ def _agents_for(trace: CallTrace):
         "foundry": foundry_client,
         "timeout": settings.AGENT_HTTP_TIMEOUT,
         "trace": trace,
+        # Process-wide, so an agent's log lines carry the same name that appears in
+        # agent_calls.agent and the two can be joined. See agents/base.py.
+        "log_factory": log_factory,
     }
     lang = MultilingualAgent(default_lang=settings.DEFAULT_LANG, **shared)
     # Which class runs which kind of job is settled here and nowhere else; the flow only

@@ -19,7 +19,7 @@
 # Source:-                                                                                         #
 #   - requests supplies the pooled HTTP session and the transport error types worth retrying.      #
 #   - backoff_retry supplies run_with_retry, the exponential-backoff runner.                       #
-#   - telemetry_logging supplies LogFactory / StructuredLogger for the search events.              #
+#   - app.event_hub supplies LogFactory / StructuredLogger for the search events.                  #
 ####################################################################################################
 
 # ============================================ Imports =============================================
@@ -32,7 +32,7 @@ from requests.adapters import HTTPAdapter  # Lets the connection pool size be se
 
 from .backoff_retry import run_with_retry  # Exponential-backoff runner for transient failures       # backoff retry
 from .servicenow_token_provider import TokenRequestError  # Raised when no token could be obtained   # token error
-from .telemetry_logging import LogFactory, StructuredLogger  # Logger factory + structured logger    # telemetry
+from app.event_hub import LogFactory, StructuredLogger  # Logger factory + structured logger        # telemetry
 
 # Status codes worth trying again: the service is rate-limiting us, or is briefly unhealthy.
 _RETRYABLE_STATUS_CODES: frozenset[int] = frozenset({429, 500, 502, 503, 504})  # Transient statuses  # retry statuses

@@ -22,7 +22,7 @@
 #   - Standard library html/re supply entity unescaping and the search-markup stripper.            #
 #   - typing (Any / Optional) supplies the type hints used on the public API surface.              #
 #   - servicenow_search_client supplies ServiceNowSearchClient + ServiceNowSearchError.            #
-#   - telemetry_logging (LogFactory / StructuredLogger) provides the structured JSON logger.       #
+#   - app.event_hub (LogFactory / StructuredLogger) provides the structured JSON logger.           #
 ####################################################################################################
 
 # ============================================ Imports =============================================
@@ -33,7 +33,7 @@ import re  # Strip the search-markup tags and collapse runs of whitespace       
 from typing import Any, Optional  # Type hints for record values and optional arguments             # stdlib typing
 
 from .servicenow_search_client import ServiceNowSearchClient, ServiceNowSearchError  # Search client + its error  # search client
-from .telemetry_logging import LogFactory, StructuredLogger  # Structured logger factory + logger type  # logging
+from app.event_hub import LogFactory, StructuredLogger  # Structured logger factory + logger type   # logging
 
 # The search service wraps matched words in markup so a user interface can highlight them. It is
 # noise to a model, so it is taken out before the text is handed over.

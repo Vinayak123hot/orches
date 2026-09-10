@@ -22,7 +22,7 @@
 #   - requests performs the token request over a pooled session.                                   #
 #   - threading guards the held token so worker threads cannot each fetch their own.               #
 #   - backoff_retry supplies run_with_retry for transient failures at the identity provider.       #
-#   - telemetry_logging supplies LogFactory / StructuredLogger for the token events.               #
+#   - app.event_hub supplies LogFactory / StructuredLogger for the token events.                   #
 ####################################################################################################
 
 # ============================================ Imports =============================================
@@ -36,7 +36,7 @@ import requests  # Performs the token request                                   
 from requests.adapters import HTTPAdapter  # Lets the connection pool size be set explicitly        # pool adapter
 
 from .backoff_retry import run_with_retry  # Exponential-backoff runner for transient failures       # backoff retry
-from .telemetry_logging import LogFactory, StructuredLogger  # Logger factory + structured logger    # telemetry
+from app.event_hub import LogFactory, StructuredLogger  # Logger factory + structured logger        # telemetry
 
 # Seconds of headroom kept in front of the stated expiry. A token is replaced this long before it
 # actually expires, so one cannot lapse between being handed out and the request reaching the

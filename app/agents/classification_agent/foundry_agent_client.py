@@ -19,7 +19,7 @@
 # Source:-                                                                                         #
 #   - From model_cost_meter CostTracker is imported.                                               #
 #       - CostTracker:- turns response token usage into a logged cost figure.                      #
-#   - From telemetry_logging LogFactory / StructuredLogger are imported.                           #
+#   - From app.event_hub LogFactory / StructuredLogger are imported.                               #
 #       - LogFactory / StructuredLogger:- logger factory + structured logger type.                 #
 #   - From backoff_retry run_with_retry is imported.                                               #
 #       - run_with_retry:- generic exponential-backoff retry runner for transient errors.          #
@@ -42,7 +42,7 @@ from openai import (  # OpenAI SDK errors (the Responses client handed out by th
 
 from .backoff_retry import run_with_retry  # Generic exponential-backoff retry runner                # backoff retry
 from .model_cost_meter import CostTracker  # Turns response token usage into a logged cost figure    # cost meter
-from .telemetry_logging import LogFactory, StructuredLogger  # Logger factory + structured logger type  # telemetry
+from app.event_hub import LogFactory, StructuredLogger  # Logger factory + structured logger type   # telemetry
 
 # Transient errors (Azure transport + OpenAI) worth retrying with backoff.
 _RETRYABLE_EXCEPTIONS: tuple[type[Exception], ...] = (  # Exceptions eligible for a retry           # retryable set

@@ -288,6 +288,7 @@ def main() -> int:  # Interactive chat, or a single turn when a message is suppl
     from app.agents.classification_agent.main import FirstClassificationAgent  # The agent entry point  # agent class
     from app.clients.foundry import FoundryClient  # The application's own Foundry connection        # foundry client
     from app.core.tracing import CallTrace  # Per-turn call trace, as the application builds one     # call trace
+    from app.event_hub import build_log_factory  # The application's structured-logging factory      # log factory
 
     print("")  # Blank line so the banner stands clear of the shell prompt                           # spacer
     print(f"  endpoint : {settings.AZURE_FOUNDRY_PROJECT_ENDPOINT}")  # Which project we are calling  # print endpoint
@@ -297,6 +298,7 @@ def main() -> int:  # Interactive chat, or a single turn when a message is suppl
           f" {agent_settings.foundry.max_search_rounds} knowledge-base fetches")  # And the search budget
 
     # --- Connect once, exactly as the application does at startup ---
+    log_factory = build_log_factory(settings)  # One factory, exactly as the composition root builds it  # log factory
     foundry_client = FoundryClient(  # The same client class the application builds per worker       # build client
         settings.AZURE_FOUNDRY_PROJECT_ENDPOINT,  # Project endpoint from the environment            # endpoint
         timeout=settings.FOUNDRY_HTTP_TIMEOUT,  # Bounds the client's own short calls                # timeout
@@ -311,6 +313,7 @@ def main() -> int:  # Interactive chat, or a single turn when a message is suppl
             foundry=foundry_client,  # The shared, already-authenticated connection                  # foundry
             timeout=settings.AGENT_HTTP_TIMEOUT,  # Wall-clock budget for one whole turn             # timeout
             trace=trace,  # This turn's call trace                                                   # trace
+            log_factory=log_factory,  # The shared structured-logging factory                        # log factory
         )
         return agent, trace  # Hand both back to the caller                                          # return pair
 

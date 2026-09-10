@@ -6,13 +6,13 @@
 #                                                                                                  #
 # Purpose of file:                                                                                 #
 #   1. Load the application's config.yaml and validate this agent's section into typed settings.   #
-#   2. Define every config shape this agent needs (Foundry agent, KB, retry, cost, logging).       #
+#   2. Define every config shape this agent needs (Foundry agent, KB, search, retry, cost).        #
 #   3. Overlay a small allowlist of non-secret environment variables onto the loaded values.       #
 #                                                                                                  #
 # Scope:                                                                                           #
 #   This file carries the settings that select and tune the AGENT: which Foundry agent to invoke,  #
-#   its call budgets, the knowledge-base index, and the retry, cost and logging policy. The        #
-#   Foundry connection is owned by the hosting application and injected at construction.           #
+#   its call budgets, how a search result is shaped, and the retry and cost policy. The Foundry     #
+#   connection and the logging factory are owned by the application and injected at construction.  #
 #                                                                                                  #
 # Source:-                                                                                         #
 #   - os is read for the environment-variable override allowlist.                                  #
@@ -50,24 +50,6 @@ _ENV_OVERRIDES: dict[str, tuple[str, str]] = {  # Map of env var name to the (se
 
 
 # ========================================= Config models =========================================
-class EventHubConfig(BaseModel):  # Typed model for Event Hub log-forwarding settings
-    """Event Hub log-forwarding settings.
-
-    What this model is:
-        - The typed shape of the optional Event Hub log sink; disabled by default so no forwarding
-          happens until an operator opts in via config.
-
-    Security and production notes:
-        1. This model carries the namespace and hub name; the emitter authenticates with Entra ID
-           via DefaultAzureCredential.
-        2. Forwarding stays OFF (enabled=False) unless explicitly enabled in the YAML.
-    """
-
-    enabled: bool = False  # Whether Event Hub forwarding is enabled (default off)                   # forwarding toggle
-    fully_qualified_namespace: str = ""  # Event Hubs namespace host (default empty)                 # namespace host
-    event_hub_name: str = ""  # Target Event Hub name (default empty)                                # hub name
-
-
 class KnowledgeBaseConfig(BaseModel):  # Typed model for how a search result is shaped for the agent
     """How much of a search result reaches the agent.
 
@@ -160,17 +142,6 @@ class CostConfig(BaseModel):  # Typed model for cost-tracking prices keyed by mo
     prices: dict[str, ModelPrice] = Field(default_factory=dict)  # Map of model name to its ModelPrice  # price table
 
 
-class LoggingConfig(BaseModel):  # Typed model for logging settings
-    """Logging settings.
-
-    What this model is:
-        - The typed shape of the structured-logging settings; controls the minimum level emitted by
-          this agent's loggers.
-    """
-
-    log_level: str = "INFO"  # Minimum log level to emit (default INFO)                              # log level
-
-
 class FoundryConfig(BaseModel):  # Typed model for the Foundry agent selection and call budget
     """Foundry agent settings: which agent to invoke and how far one turn may go.
 
@@ -210,10 +181,8 @@ class AgentSettings(BaseModel):  # Top-level typed model aggregating this agent'
     knowledge_base: KnowledgeBaseConfig = Field(default_factory=KnowledgeBaseConfig)  # KB source settings  # kb section
     servicenow_search: ServiceNowSearchConfig = Field(default_factory=ServiceNowSearchConfig)  # Search call policy  # search section
     foundry: FoundryConfig = Field(default_factory=FoundryConfig)  # Foundry agent settings          # foundry section
-    event_hub: EventHubConfig = Field(default_factory=EventHubConfig)  # Event Hub settings           # event hub section
     retry: RetryConfig = Field(default_factory=RetryConfig)  # Retry settings                        # retry section
     cost: CostConfig = Field(default_factory=CostConfig)  # Cost settings                            # cost section
-    logging: LoggingConfig = Field(default_factory=LoggingConfig)  # Logging settings                # logging section
 
 
 # ============================================= Loader ============================================

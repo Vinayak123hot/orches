@@ -36,6 +36,7 @@
 # Source:-                                                                                         #
 #   - app.agents.base supplies Agent (the injected collaborators and the _call hook).              #
 #   - app.core.errors supplies UpstreamTransient (raised so the caller's error policy applies).    #
+#   - app.event_hub supplies LogFactory, used when the application injected none.                  #
 #   - turn_orchestrator supplies get_turn_service (the cached, process-wide turn service).         #
 ####################################################################################################
 
@@ -44,6 +45,7 @@ from __future__ import annotations  # Enable postponed evaluation of type annota
 
 from app.agents.base import Agent  # Base class carrying the injected collaborators and the _call hook  # agent base
 from app.core.errors import UpstreamTransient  # Domain error raised when a turn cannot be completed  # domain error
+from app.event_hub import LogFactory  # Stands in when no logging factory was injected              # log factory
 
 from .turn_orchestrator import get_turn_service  # Cached service that drives one classification turn  # service factory
 
@@ -151,6 +153,7 @@ class FirstClassificationAgent(Agent):  # Turns a described problem into an arti
         turn_service = get_turn_service(  # The cached, process-wide turn service                    # get service
             foundry_client=self._foundry,  # The application's already-authenticated Foundry client  # foundry client
             turn_budget_seconds=float(self._timeout or _DEFAULT_TURN_BUDGET_SECONDS),  # Budget for one whole turn  # time budget
+            log_factory=self._resolve_log_factory(),  # Shared factory, or a plain fallback         # log factory
         )
 
         with self.traced({"conversation_id": conversation_id, "message": message}) as call:  # Time + record the call  # trace call
@@ -172,3 +175,35 @@ class FirstClassificationAgent(Agent):  # Turns a described problem into an arti
             "agent_message": outcome.get("agent_message") or "",  # The line that is safe to show the user  # user text
             "status": status,  # Which outcome this is - route on this, not on chat_close alone      # outcome kind
         }
+
+    def _resolve_log_factory(self) -> LogFactory:
+        """Return the logging factory this agent's components take their loggers from.
+
+        What this method is:
+            - The one place the logging factory is settled. It prefers the application's, which
+              carries the configured level and the shared Event Hub producer, and otherwise builds
+              a plain stdout-only one.
+
+        Why it reads the attribute defensively:
+            - The base class stores whichever collaborators it chooses to keep, and this agent must
+              not require it to keep one on this agent's behalf. Reading it this way means a base
+              class that never sets the attribute costs nothing here, and no shared file has to
+              change for this agent's benefit.
+
+        Why a fallback exists at all:
+            - Several components in this folder each take a logger named after themselves. Without
+              a factory they would have nowhere to get one, so a test or a script that builds the
+              agent directly would fail on its first turn rather than simply logging to stdout.
+
+        Args:
+            None.
+
+        Returns:
+            The application's LogFactory when one was injected, else a stdout-only one.
+
+        Example:
+            >>> agent._resolve_log_factory()  # doctest: +SKIP
+            <LogFactory ...>
+        """
+        injected = getattr(self, "_log_factory", None)  # The application's factory, when it kept one  # read attr
+        return injected if injected is not None else LogFactory()  # Fall back to stdout only        # choose

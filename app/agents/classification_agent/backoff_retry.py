@@ -11,7 +11,7 @@
 #   4. Emit structured retry / exhaustion log events carrying the end-to-end correlation id.       #
 #                                                                                                  #
 # Source:-                                                                                         #
-#   - From telemetry_logging StructuredLogger is imported.                                         #
+#   - From app.event_hub StructuredLogger is imported.                                             #
 #       - StructuredLogger:- typed structured logger used to emit retry and exhaustion events      #
 #         keyed by correlation_id for end-to-end tracing.                                          #
 #   - random (stdlib) supplies the jitter that de-synchronises concurrent retries.                 #
@@ -26,7 +26,7 @@ import random  # Provides jitter to avoid synchronized retries (thundering herd)
 import time  # Provides sleep() used for the backoff delay                                          # stdlib time
 from typing import Callable, TypeVar  # Type hints for the operation callable and generic result type  # typing hints
 
-from .telemetry_logging import StructuredLogger  # Typed structured logger for retry events         # logger type
+from app.event_hub import StructuredLogger  # Typed structured logger for retry events              # logger type
 
 _ResultType = TypeVar("_ResultType")  # Generic type variable representing the operation's return type  # result typevar
 

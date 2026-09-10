@@ -14,7 +14,7 @@
 #   - From runtime_config ModelPrice is imported.                                                  #
 #       - ModelPrice:- the per-model price data structure (input_price / output_price per token)   #
 #         used for the cost lookups keyed by model name.                                           #
-#   - From telemetry_logging StructuredLogger is imported.                                         #
+#   - From app.event_hub StructuredLogger is imported.                                             #
 #       - StructuredLogger:- the structured logger type used to emit the cost / missing-price      #
 #         events with a correlation id for end-to-end tracing.                                     #
 ####################################################################################################
@@ -23,7 +23,7 @@
 from __future__ import annotations  # Enable postponed evaluation of type annotations (PEP 563)     # future import
 
 from .runtime_config import ModelPrice  # Per-model price data structure used for cost lookups      # price model
-from .telemetry_logging import StructuredLogger  # Structured logger type for emitting cost events  # logger type
+from app.event_hub import StructuredLogger  # Structured logger type for emitting cost events       # logger type
 
 
 # ========================================== Cost tracker =========================================

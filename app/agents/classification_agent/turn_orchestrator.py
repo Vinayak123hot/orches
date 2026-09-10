@@ -16,7 +16,7 @@
 #   - runtime_config supplies load_settings and the search endpoint's connection details.          #
 #   - correlation_ids supplies generate_correlation_id (log key when a conversation id is blank).  #
 #   - model_cost_meter supplies CostTracker (turns response token usage into a logged cost).       #
-#   - telemetry_logging supplies EventHubLogEmitter / LogFactory / StructuredLogger.               #
+#   - app.event_hub supplies LogFactory / StructuredLogger.                                        #
 #   - service_contracts supplies AgentEntryRequest / AgentEntryResponse / AgentStructuredOutput.   #
 #   - foundry_agent_client supplies FoundryAgentGateway + FoundryAgentError.                       #
 #   - servicenow_kb_source supplies KnowledgeBaseSource + KnowledgeBaseSourceError.                #
@@ -47,7 +47,7 @@ from .servicenow_token_provider import (  # Supplies the bearer token the search
     ClientCredentialsTokenProvider,  # Requests a token and holds it until it nears expiry           # requested
     StaticTokenProvider,  # Presents a token that was supplied directly                              # supplied
 )
-from .telemetry_logging import EventHubLogEmitter, LogFactory, StructuredLogger  # Logging: emitter, factory, logger  # telemetry
+from app.event_hub import LogFactory, StructuredLogger  # Logger factory + structured logger type    # telemetry
 
 # Strips accidental ```json ... ``` fences from the agent's reply.
 _JSON_FENCE_PATTERN = re.compile(r"^```(?:json)?|```$", re.IGNORECASE | re.MULTILINE)  # Opening/closing fence matcher  # fence regex
@@ -534,39 +534,36 @@ class ClassificationTurnService:  # Coordinates one turn against the Foundry age
 
 
 # ========================================== Build / cache =========================================
-def _build_turn_service(foundry_client: Any, turn_budget_seconds: float) -> ClassificationTurnService:  # Compose the service  # composition root
-    """Build the turn service, the Foundry gateway and the in-process knowledge-base source.
+def _build_turn_service(  # Compose the service                                                      # composition root
+    foundry_client: Any, turn_budget_seconds: float, log_factory: LogFactory
+) -> ClassificationTurnService:
+    """Build the turn service, the Foundry gateway and the knowledge-base source.
 
     What this does:
         Reads and validates this agent's configuration, builds the cross-cutting services it needs
         (logging, cost tracking), and wires the gateway and knowledge-base source around the
         Foundry client the hosting application injected.
 
-    Why the Foundry client is a parameter:
-        The connection is the application's, not this agent's. Taking it as an argument is what
-        keeps this agent from opening a second credential and a second client for the same project.
+    Why the collaborators are parameters:
+        The Foundry connection and the logging factory both belong to the application and are
+        shared by every agent. Taking them as arguments keeps this agent from opening a second
+        credential for the same project, or a second Event Hub producer for the same records.
 
     Args:
         foundry_client: The application's Foundry client, exposing an `openai` Responses client.
         turn_budget_seconds: Wall-clock seconds one whole turn may take before it hands off.
+        log_factory: The application's logging factory; each component takes a logger named
+            after itself from it, so a record says which part produced it.
 
     Returns:
         A fully wired ClassificationTurnService.
 
     Example:
-        >>> isinstance(_build_turn_service(foundry_client, 120.0), ClassificationTurnService)  # doctest: +SKIP
+        >>> isinstance(_build_turn_service(client, 120.0, log_factory), ClassificationTurnService)  # doctest: +SKIP
         True
     """
     settings = load_settings()  # Load + validate this agent's section of the application config     # load config
 
-    # Build only the cross-cutting services this agent needs.
-    emitter = None  # Default: no Event Hub emitter                                                   # no emitter
-    if settings.event_hub.enabled:  # Only build an emitter when Event Hub is enabled in config       # emitter toggle
-        emitter = EventHubLogEmitter(  # Construct the Event Hub log emitter                          # build emitter
-            fully_qualified_namespace=settings.event_hub.fully_qualified_namespace,  # Namespace from config  # namespace
-            event_hub_name=settings.event_hub.event_hub_name,  # Event Hub name from config          # hub name
-        )
-    log_factory = LogFactory(log_level=settings.logging.log_level, emitter=emitter)  # Structured-logger factory  # log factory
     cost_tracker = CostTracker(  # Cost tracker for response token usage                              # cost tracker
         prices=settings.cost.prices,  # Per-model pricing from config                                 # prices
         logger=log_factory.get_logger("usage_cost_tracker"),  # Dedicated cost logger                # cost logger
@@ -640,7 +637,9 @@ def _build_turn_service(foundry_client: Any, turn_budget_seconds: float) -> Clas
     )
 
 
-def get_turn_service(foundry_client: Any, turn_budget_seconds: float) -> ClassificationTurnService:  # Cached accessor  # cache accessor
+def get_turn_service(  # Cached accessor                                                             # cache accessor
+    foundry_client: Any, turn_budget_seconds: float, log_factory: LogFactory
+) -> ClassificationTurnService:
     """Return the cached turn service, building it once per worker (thread-safe).
 
     What this does:
@@ -648,24 +647,28 @@ def get_turn_service(foundry_client: Any, turn_budget_seconds: float) -> Classif
         the worker process, so the gateway and the knowledge-base index are constructed once.
 
     Why the arguments only matter on the first call:
-        The hosting application builds one Foundry client per worker and derives the timeout from
-        its own configuration, so every caller passes the same values. They are accepted per call
-        because the agent object that supplies them is constructed per request.
+        The hosting application builds one Foundry client and one logging factory per worker, and
+        derives the timeout from its own configuration, so every caller passes the same values.
+        They are accepted per call because the agent object that supplies them is constructed per
+        request.
 
     Args:
         foundry_client: The application's Foundry client, exposing an `openai` Responses client.
         turn_budget_seconds: Wall-clock seconds one whole turn may take before it hands off.
+        log_factory: The application's logging factory.
 
     Returns:
         The process-wide ClassificationTurnService singleton.
 
     Example:
-        >>> get_turn_service(client, 120.0) is get_turn_service(client, 120.0)  # doctest: +SKIP
+        >>> get_turn_service(c, 120.0, f) is get_turn_service(c, 120.0, f)  # doctest: +SKIP
         True
     """
     global _CACHED_TURN_SERVICE  # Refer to the module-level cache                                    # global cache
     if _CACHED_TURN_SERVICE is None:  # Fast path: avoid taking the lock once built                   # fast path
         with _TURN_SERVICE_LOCK:  # Serialise construction so concurrent cold requests build only once  # take lock
             if _CACHED_TURN_SERVICE is None:  # Re-check inside the lock (another thread may have built it)  # double-check
-                _CACHED_TURN_SERVICE = _build_turn_service(foundry_client, turn_budget_seconds)  # Build once  # build once
+                _CACHED_TURN_SERVICE = _build_turn_service(  # Build once                            # build once
+                    foundry_client, turn_budget_seconds, log_factory
+                )
     return _CACHED_TURN_SERVICE  # Return the cached turn service                                     # return cached
