@@ -59,13 +59,16 @@ Security and production notes:
 # ============================================ Imports =============================================
 from fastapi import Depends  # Declares the per-request graph; runs get_db's finally for us          # fastapi
 
-from app.agents.classification_first.main import FirstClassificationAgent  # issue -> kb_id          # agent
-from app.agents.classification_second.main import SecondClassificationAgent  # kb_id -> how          # agent
-from app.agents.diagnostics.main import DiagnosticsAgent  # Diagnose on the user's device            # agent
-from app.agents.multilingual.main import MultilingualAgent  # Detect language + translate            # agent
-from app.agents.orchestrator.main import OrchestratorAgent  # Classify the user's message            # agent
-from app.agents.servicenow.main import ServiceNowAgent  # Interaction + incident lifecycle           # agent
-from app.agents.troubleshoot.main import TroubleshootAgent  # Remediate on the user's device         # agent
+from app.agents.classification_agent.main import FirstClassificationAgent  # issue -> kb_id          # agent
+from app.agents.kb_validation_agent.main import SecondClassificationAgent  # kb_id -> how            # agent
+# The agents below have no folder under app/agents/ yet. Their imports and the lines that
+# build them are commented rather than deleted, so restoring one is uncommenting two lines
+# once its folder lands. Until then _agents_for cannot assemble a flow -- see the note there.
+# from app.agents.diagnostics.main import DiagnosticsAgent  # Diagnose on the user's device          # agent
+# from app.agents.multilingual.main import MultilingualAgent  # Detect language + translate          # agent
+# from app.agents.orchestrator.main import OrchestratorAgent  # Classify the user's message          # agent
+# from app.agents.servicenow.main import ServiceNowAgent  # Interaction + incident lifecycle         # agent
+# from app.agents.troubleshoot.main import TroubleshootAgent  # Remediate on the user's device       # agent
 from app.clients.foundry import FoundryClient  # The process-wide Azure AI Foundry client            # client
 from app.core.config import settings  # The parsed configuration every layer reads                   # config
 from app.core.tracing import CallTrace  # One per request; never shared between requests             # tracing
@@ -172,6 +175,14 @@ def _agents_for(trace: CallTrace):
 
     Returns:
         (flow, lang, jobs) -- SupportFlow, MultilingualAgent, JobRunner.
+
+    Current state:
+        Only the two classification agents have folders under app/agents/. The flow, the
+        language agent and the job runner each need agents that do not exist yet, so they
+        are returned as None and the lines that build them are commented below, next to the
+        agent each one needs. The chat and job endpoints therefore cannot serve a turn; the
+        classification agent itself is exercised through its own run_local.py, which builds
+        it directly and does not come through here.
     """
     shared = {  # The same four collaborators for every agent, so adding one is a single line        # shared kwargs
         "settings": settings,  # An agent reads whatever it needs, or its own env vars               # config
@@ -183,22 +194,22 @@ def _agents_for(trace: CallTrace):
         # lines are already tagged with the same name that appears in agent_calls.agent.
         "log_factory": log_factory,  # Becomes a logger named for the agent's own label              # log factory
     }
-    lang = MultilingualAgent(default_lang=settings.DEFAULT_LANG, **shared)  # Held by BOTH services  # lang agent
+    lang = None  # MultilingualAgent(default_lang=settings.DEFAULT_LANG, **shared)                   # lang agent
     # Which class runs which kind of job is settled here and nowhere else; the flow only
     # ever names a KIND (see constants.JOB_KIND_*).
-    jobs = JobRunner(
-        diagnostics=DiagnosticsAgent(**shared),  # JOB_KIND_DIAGNOSTIC                               # agent
-        troubleshoot=TroubleshootAgent(**shared),  # JOB_KIND_TROUBLESHOOT                           # agent
-        trace=trace,  # So a "still running" poll row is dropped from OUR trace                      # trace
-    )
-    flow = SupportFlow(
-        orchestrator=OrchestratorAgent(**shared),  # Decides whether this is support work            # agent
-        classify_first=FirstClassificationAgent(**shared),  # issue -> kb_id + summary               # agent
-        classify_second=SecondClassificationAgent(**shared),  # kb_id -> how to resolve it           # agent
-        servicenow=ServiceNowAgent(**shared),  # Interaction + incident lifecycle                    # agent
-        multilingual=lang,  # The SAME instance the service holds, so its state is shared            # agent
-        settings=settings,  # For MAX_NONACTIONABLE and DEFAULT_DEVICE_ID                            # config
-    )
+    jobs = None  # JobRunner(
+    #     diagnostics=DiagnosticsAgent(**shared),  # JOB_KIND_DIAGNOSTIC                             # agent
+    #     troubleshoot=TroubleshootAgent(**shared),  # JOB_KIND_TROUBLESHOOT                         # agent
+    #     trace=trace,  # So a "still running" poll row is dropped from OUR trace                    # trace
+    # )
+    flow = None  # SupportFlow(
+    #     orchestrator=OrchestratorAgent(**shared),  # Decides whether this is support work          # agent
+    #     classify_first=FirstClassificationAgent(**shared),  # issue -> kb_id + summary             # agent
+    #     classify_second=SecondClassificationAgent(**shared),  # kb_id -> how to resolve it         # agent
+    #     servicenow=ServiceNowAgent(**shared),  # Interaction + incident lifecycle                  # agent
+    #     multilingual=lang,  # The SAME instance the service holds, so its state is shared          # agent
+    #     settings=settings,  # For MAX_NONACTIONABLE and DEFAULT_DEVICE_ID                          # config
+    # )
     return flow, lang, jobs  # The three objects the services actually hold                          # return
 
 
