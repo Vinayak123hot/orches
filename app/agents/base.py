@@ -32,7 +32,10 @@ class Agent:
     #: Written to agent_calls.agent and used in log lines. Subclasses set it.
     label = "agent"
 
-    def __init__(self, *, settings=None, foundry=None, timeout=None, trace=None):
+    def __init__(
+        self, *, settings=None, foundry=None, timeout=None, trace=None,
+        log_factory=None,
+    ):
         # The app's parsed configuration (app/core/config.py). Read whatever your agent needs
         # from it, or read your own environment variables in your folder -- an agent's
         # configuration is its own business.
@@ -46,6 +49,20 @@ class Agent:
         self._timeout = timeout
         # This request's CallTrace, or NULL_TRACE. Never None, so no agent needs to check.
         self._trace = trace if trace is not None else NULL_TRACE
+        # A structured logger named after this agent's label -- so its lines carry the
+        # same name that appears in agent_calls.agent, and Splunk and SQL agree. Use it as
+        #     self._logger.log(event="kb_lookup_failed", correlation_id=conv_id,
+        #                      error_type=type(exc).__name__)
+        # correlation_id is the conversation_id: it is what ties this line to every other
+        # line of the same conversation, across the flow and the other agents.
+        #
+        # NEVER put a user email, free text, raw device output or an exception MESSAGE in
+        # a field -- these records can be forwarded out of the tenant. Ids, numbers, enums
+        # and error_type only. Pass exc_info=True and the traceback goes to our stdout
+        # without going to Event Hub.
+        self._logger = (
+            log_factory.get_logger(self.label) if log_factory is not None else None
+        )
 
     # -----------------------------------------------------------------------
     # For the agent implementations
