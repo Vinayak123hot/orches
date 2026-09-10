@@ -284,11 +284,33 @@ class ServiceNowCredentials(BaseModel):  # Typed model for the search endpoint's
     """
 
     base_url: str  # Endpoint URL, without a query string                                            # base url
-    bearer_token: str  # Sent as "Authorization: Bearer <token>"                                     # token
     registration_id: str  # Identifies this integration to the service                               # registration
     user_id: str  # The account the search runs as                                                   # user id
     req_type: str = "search"  # Fixed 'reqType' query parameter                                      # req type
     search_type: str = "knowledge"  # Fixed 'searchType' query parameter                             # search type
+
+    # --- How the bearer token is obtained ---------------------------------------------------------
+    # Either the four oauth_* values are set, and a token is requested as needed, or bearer_token
+    # carries one directly. load_servicenow_credentials checks that one of the two is complete.
+    oauth_token_url: str = ""  # Endpoint a token is requested from                                  # token url
+    oauth_client_id: str = ""  # The application's own identifier                                    # client id
+    oauth_client_secret: str = ""  # The application's own secret                                    # client secret
+    oauth_scope: str = ""  # The scope a token is requested for                                      # scope
+    bearer_token: str = ""  # A token supplied directly                                              # static token
+
+    @property
+    def uses_oauth(self) -> bool:  # True when a token is requested rather than supplied
+        """Report whether a token is requested from the identity provider.
+
+        Returns:
+            True when all four oauth_* values are set.
+
+        Example:
+            >>> ServiceNowCredentials(base_url="u", registration_id="r", user_id="a").uses_oauth
+            False
+        """
+        return all((self.oauth_token_url, self.oauth_client_id,  # Every part must be present        # all set?
+                    self.oauth_client_secret, self.oauth_scope))  # for a token to be requested      # all set?
 
 
 def load_servicenow_credentials() -> ServiceNowCredentials:  # Read the search endpoint's details from the environment
@@ -331,21 +353,47 @@ def load_servicenow_credentials() -> ServiceNowCredentials:  # Read the search e
     except ImportError:  # python-dotenv is absent; the real environment is used as-is               # no dotenv
         pass  # Continue with whatever the process already has                                       # carry on
 
+    def read(name: str, default: str = "") -> str:  # Read one setting, treating a placeholder as unset
+        """Return an environment value, with an unfilled placeholder treated as absent."""
+        raw = os.environ.get(name, default).strip()  # The value as set                              # read value
+        return "" if raw.startswith("<") and raw.endswith(">") else raw  # Placeholder counts as unset  # unfilled?
+
     values = {  # Read each setting from the environment                                             # read env
-        "base_url": os.environ.get("SERVICENOW_API_BASE_URL", "").strip(),  # Endpoint URL           # base url
-        "bearer_token": os.environ.get("SERVICENOW_API_BEARER_TOKEN", "").strip(),  # Token          # token
-        "registration_id": os.environ.get("SERVICENOW_API_REGISTRATION_ID", "").strip(),  # Registration id  # registration
-        "user_id": os.environ.get("SERVICENOW_API_USER_ID", "").strip(),  # Account to search as     # user id
-        "req_type": os.environ.get("SERVICENOW_API_REQ_TYPE", "search").strip(),  # Fixed parameter  # req type
-        "search_type": os.environ.get("SERVICENOW_API_SEARCH_TYPE", "knowledge").strip(),  # Fixed parameter  # search type
+        "base_url": read("SERVICENOW_API_BASE_URL"),  # Endpoint URL                                 # base url
+        "registration_id": read("SERVICENOW_API_REGISTRATION_ID"),  # Identifies this integration    # registration
+        "user_id": read("SERVICENOW_API_USER_ID"),  # Account to search as                           # user id
+        "req_type": read("SERVICENOW_API_REQ_TYPE", "search"),  # Fixed parameter                    # req type
+        "search_type": read("SERVICENOW_API_SEARCH_TYPE", "knowledge"),  # Fixed parameter           # search type
+        "oauth_token_url": read("SERVICENOW_OAUTH_TOKEN_URL"),  # Token endpoint                     # token url
+        "oauth_client_id": read("SERVICENOW_OAUTH_CLIENT_ID"),  # Application identifier             # client id
+        "oauth_client_secret": read("SERVICENOW_OAUTH_CLIENT_SECRET"),  # Application secret         # client secret
+        "oauth_scope": read("SERVICENOW_OAUTH_SCOPE"),  # Scope a token is requested for             # scope
+        "bearer_token": read("SERVICENOW_API_BEARER_TOKEN"),  # A token supplied directly            # static token
     }
 
-    required_settings = {  # The four that have no sensible default                                  # required map
+    required_settings = {  # The three the search itself cannot run without                          # required map
         "SERVICENOW_API_BASE_URL": values["base_url"],  # Endpoint URL                               # base url
-        "SERVICENOW_API_BEARER_TOKEN": values["bearer_token"],  # Token                              # token
         "SERVICENOW_API_REGISTRATION_ID": values["registration_id"],  # Registration id              # registration
         "SERVICENOW_API_USER_ID": values["user_id"],  # Account to search as                         # user id
     }
+
+    # The token is either requested or supplied. Requesting one is preferred, since a supplied token
+    # expires within the hour and has to be replaced by hand.
+    oauth_settings = {  # Every part needed to request a token                                       # oauth map
+        "SERVICENOW_OAUTH_TOKEN_URL": values["oauth_token_url"],  # Token endpoint                   # token url
+        "SERVICENOW_OAUTH_CLIENT_ID": values["oauth_client_id"],  # Application identifier           # client id
+        "SERVICENOW_OAUTH_CLIENT_SECRET": values["oauth_client_secret"],  # Application secret       # client secret
+        "SERVICENOW_OAUTH_SCOPE": values["oauth_scope"],  # Scope a token is requested for           # scope
+    }
+    oauth_present = [name for name, value in oauth_settings.items() if value]  # What was supplied   # present
+    if oauth_present and len(oauth_present) < len(oauth_settings):  # Started but not finished       # partial?
+        missing_oauth = sorted(set(oauth_settings) - set(oauth_present))  # What is still needed      # missing
+        raise ValueError(  # A half-filled set would silently fall back to a supplied token           # raise
+            "Incomplete token settings: " + ", ".join(missing_oauth) + ". "  # Which names            # names
+            "Set all four to request a token, or none to use SERVICENOW_API_BEARER_TOKEN."  # How     # how
+        )
+    if not oauth_present and not values["bearer_token"]:  # Neither way of getting a token is set     # no token?
+        required_settings["SERVICENOW_OAUTH_* (or SERVICENOW_API_BEARER_TOKEN)"] = ""  # Report it    # add to missing
     # A value still carrying its <angle-bracket> placeholder counts as unset. Without this a
     # half-filled .env passes the check and the first search fails against a hostname of
     # "<host>", which reads as a network fault rather than the missing setting it really is.

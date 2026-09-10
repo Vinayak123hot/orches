@@ -43,6 +43,10 @@ from .runtime_config import (  # Validated config and the search endpoint's conn
 from .service_contracts import AgentEntryRequest, AgentEntryResponse, AgentStructuredOutput  # Turn boundary models  # contracts
 from .servicenow_kb_source import KnowledgeBaseSource, KnowledgeBaseSourceError  # KB source + its error  # kb source
 from .servicenow_search_client import ServiceNowSearchClient  # Client for the knowledge search endpoint  # search client
+from .servicenow_token_provider import (  # Supplies the bearer token the search is called with      # token provider
+    ClientCredentialsTokenProvider,  # Requests a token and holds it until it nears expiry           # requested
+    StaticTokenProvider,  # Presents a token that was supplied directly                              # supplied
+)
 from .telemetry_logging import EventHubLogEmitter, LogFactory, StructuredLogger  # Logging: emitter, factory, logger  # telemetry
 
 # Strips accidental ```json ... ``` fences from the agent's reply.
@@ -585,9 +589,27 @@ def _build_turn_service(foundry_client: Any, turn_budget_seconds: float) -> Clas
 
     credentials = load_servicenow_credentials()  # Read the connection details from the environment  # credentials
     search_config = settings.servicenow_search  # Non-secret call policy from the YAML               # search cfg
+
+    # A token is either requested from the identity provider as needed, or supplied directly.
+    if credentials.uses_oauth:  # The four token settings are present                                # request one?
+        token_provider = ClientCredentialsTokenProvider(  # Obtain tokens and hold them              # build provider
+            token_url=credentials.oauth_token_url,  # Token endpoint                                 # token url
+            client_id=credentials.oauth_client_id,  # The application's own identifier               # client id
+            client_secret=credentials.oauth_client_secret,  # The application's own secret           # client secret
+            scope=credentials.oauth_scope,  # The scope a token is requested for                     # scope
+            request_timeout_seconds=search_config.request_timeout_seconds,  # Per-call timeout       # timeout
+            verify_tls=search_config.verify_tls,  # Certificate verification                         # verify tls
+            log_factory=log_factory,  # Logger factory for the token provider                        # log factory
+            retry_max_attempts=settings.retry.max_attempts_for("servicenow_token"),  # Attempt cap   # retries
+            retry_base_delay_seconds=settings.retry.base_delay_seconds,  # Backoff base delay        # base delay
+            retry_max_delay_seconds=settings.retry.max_delay_seconds,  # Backoff ceiling             # max delay
+        )
+    else:  # A token was supplied directly                                                           # supplied
+        token_provider = StaticTokenProvider(credentials.bearer_token)  # Present it on every request  # build provider
+
     search_client = ServiceNowSearchClient(  # Build the pooled search client                        # build client
         base_url=credentials.base_url,  # Endpoint URL                                               # base url
-        bearer_token=credentials.bearer_token,  # Sent as the Authorization header                   # token
+        token_provider=token_provider,  # Supplies the token for each request                        # token provider
         registration_id=credentials.registration_id,  # Identifies this integration                  # registration
         user_id=credentials.user_id,  # The account the search runs as                               # user id
         req_type=credentials.req_type,  # Fixed query parameter                                      # req type

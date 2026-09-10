@@ -75,6 +75,7 @@ classification_agent:
     per_tool_max_attempts:
       foundry_agent: 3
       servicenow_search: 3
+      servicenow_token: 3
 
   # --- Cost tracking: PER-TOKEN prices keyed by model name ---------------------------------------
   # Derive per-token prices from the published per-1M pricing by dividing by 1_000_000.

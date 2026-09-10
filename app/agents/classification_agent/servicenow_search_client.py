@@ -31,6 +31,7 @@ import requests  # Pooled HTTP session and the transport error types            
 from requests.adapters import HTTPAdapter  # Lets the connection pool size be set explicitly        # pool adapter
 
 from .backoff_retry import run_with_retry  # Exponential-backoff runner for transient failures       # backoff retry
+from .servicenow_token_provider import TokenRequestError  # Raised when no token could be obtained   # token error
 from .telemetry_logging import LogFactory, StructuredLogger  # Logger factory + structured logger    # telemetry
 
 # Status codes worth trying again: the service is rate-limiting us, or is briefly unhealthy.
@@ -101,7 +102,7 @@ class ServiceNowSearchClient:
     def __init__(  # Configure the endpoint, the credentials, and the call policy
         self,
         base_url: str,  # Endpoint URL, without a query string                                       # base url
-        bearer_token: str,  # Token sent as "Authorization: Bearer <token>"                          # token
+        token_provider: Any,  # Supplies the bearer token for each request                           # token provider
         registration_id: str,  # Identifies this integration to the service                          # registration
         user_id: str,  # The account the search runs as                                              # user id
         req_type: str,  # Fixed 'reqType' query parameter                                            # req type
@@ -153,6 +154,7 @@ class ServiceNowSearchClient:
             ...     "search", "knowledge", 20, 10, True, log_factory, 3, 0.5, 8.0)
         """
         self._base_url = base_url  # Endpoint the search is sent to                                  # base url
+        self._token_provider = token_provider  # Supplies the token for each request                 # token provider
         self._registration_id = registration_id  # Sent on every request                             # registration
         self._user_id = user_id  # Sent on every request                                             # user id
         self._req_type = req_type  # Sent on every request                                           # req type
@@ -165,10 +167,9 @@ class ServiceNowSearchClient:
         self._retry_max_delay_seconds = retry_max_delay_seconds  # Backoff ceiling                   # max delay
 
         self._session = requests.Session()  # One pooled session reused by every search              # build session
-        self._session.headers.update({  # Headers sent on every request from this session            # set headers
-            "Authorization": f"Bearer {bearer_token}",  # Bearer authentication                      # auth header
-            "Accept": "application/json",  # Ask for the JSON representation                         # accept
-        })
+        # The token is set per request rather than on the session, because a requested token is
+        # replaced as it nears expiry and a session header would keep presenting the old one.
+        self._session.headers.update({"Accept": "application/json"})  # Ask for the JSON representation  # accept
         adapter = HTTPAdapter(pool_connections=pool_maxsize, pool_maxsize=pool_maxsize)  # Sized pool  # build adapter
         self._session.mount("https://", adapter)  # Reuse connections for HTTPS                      # mount https
         self._session.mount("http://", adapter)  # And for plain HTTP, if ever used                  # mount http
@@ -214,13 +215,21 @@ class ServiceNowSearchClient:
         }
 
         def _send_request() -> "requests.Response":  # One attempt, retried by the runner below      # one attempt
-            """Send one GET and raise when the status is worth trying again."""
+            """Send one GET, carrying a current token, and raise when the status is worth retrying."""
+            token = self._token_provider.get_token(correlation_id)  # A token valid right now        # get token
             response = self._session.get(  # Send the search request                                # send get
                 self._base_url,  # Endpoint URL                                                     # url
                 params=query_parameters,  # Encoded by requests, so the search text is safe          # params
+                headers={"Authorization": f"Bearer {token}"},  # Set per request, never on the session  # auth header
                 timeout=self._request_timeout_seconds,  # Bound this attempt                        # timeout
                 verify=self._verify_tls,  # Certificate verification                                 # verify
             )
+            if response.status_code == 401:  # The token was refused                                 # refused?
+                # A token can stop being accepted before its stated expiry, through revocation or a
+                # clock difference. Discarding it means the next attempt carries a fresh one, so one
+                # retry recovers instead of every search failing until the token would have lapsed.
+                self._token_provider.invalidate()  # Do not present this token again                 # drop token
+                raise _RetryableSearchResponse("status 401")  # Try once more with a fresh token     # signal retry
             if response.status_code in _RETRYABLE_STATUS_CODES:  # Rate-limited or briefly unhealthy  # retryable?
                 raise _RetryableSearchResponse(f"status {response.status_code}")  # Signal a retry   # signal retry
             return response  # Hand the response back for reading                                   # return response
@@ -240,6 +249,13 @@ class ServiceNowSearchClient:
                     _RetryableSearchResponse,  # A 429 or 5xx status                                # bad status
                 ),
             )
+        except TokenRequestError as token_error:  # No token could be obtained, so no search can run  # no token
+            self._logger.log(  # Log the failure; the provider has already logged the detail         # log failure
+                event="kb_search_unauthenticated",  # Event name                                     # event
+                correlation_id=correlation_id,  # Log key                                            # log key
+                level="ERROR",  # Severity level                                                     # level
+            )
+            raise ServiceNowSearchError("The knowledge search could not be authenticated.") from token_error  # Domain error  # raise
         except (requests.RequestException, _RetryableSearchResponse) as request_error:  # Out of attempts  # failed
             self._logger.log(  # Log the failure without the URL or any response body               # log failure
                 event="kb_search_request_failed",  # Event name                                      # event
